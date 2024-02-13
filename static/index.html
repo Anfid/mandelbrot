@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
+    <style type="text/css">
+        :focus {
+            outline: none;
+        }
+
+        body {
+            position: absolute;
+            margin: 0px;
+            width: 100%;
+            bottom: 0px;
+            top: 0px;
+        }
+
+        .root {
+            position: absolute;
+            width: 100%;
+            bottom: 0px;
+            top: 0px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .main-canvas {
+            margin: 0;
+            /* This allows the flexbox to grow to max size, this is needed for WebGPU */
+            flex: 1;
+            /* This forces CSS to ignore the width/height of the canvas, this is needed for WebGL */
+            contain: size;
+        }
+    </style>
+    <title>Mandelbrot web</title>
+</head>
+
+<body>
+    <div class="root">
+        <canvas class="main-canvas" id="mandelbrot-canvas"></canvas>
+    </div>
+    <script type="module">
+        import init from "./pkg/mandelbrot.js";
+        init().then(() => {
+            console.log("WASM Loaded");
+        });
+    </script>
+</body>
+
+</html>
