@@ -17,6 +17,7 @@ use winit::{
 
 mod fractal;
 mod renderer;
+mod timer;
 
 #[derive(Debug, Default, Clone, Hash)]
 struct PrecisePoint {
