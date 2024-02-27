@@ -1,11 +1,9 @@
-use fractal::Fractal;
-use malachite::{
-    num::arithmetic::traits::{Ceiling, Reciprocal, Square, UnsignedAbs},
-    Natural, Rational,
-};
-use malachite_q::arithmetic::traits::ApproximateAssign;
-use std::{collections::HashSet, hash::Hash, ops::Neg};
+#![feature(bigint_helper_methods)]
 
+use fractal::Fractal;
+use std::collections::HashSet;
+
+use crate::wide_float::WideFloat;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 use winit::{
@@ -18,18 +16,12 @@ use winit::{
 mod fractal;
 mod renderer;
 mod timer;
+mod wide_float;
 
-#[derive(Debug, Default, Clone, Hash)]
+#[derive(Debug, Default, Clone)]
 struct PrecisePoint {
-    pub x: Rational,
-    pub y: Rational,
-}
-
-impl PrecisePoint {
-    pub fn approximate_to_scale(&mut self, scale: &Natural) {
-        self.x.approximate_assign(&scale);
-        self.y.approximate_assign(&scale);
-    }
+    pub x: WideFloat<5>,
+    pub y: WideFloat<5>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -41,7 +33,7 @@ struct Point {
 #[derive(Debug, Clone)]
 struct PreciseViewState {
     center: PrecisePoint,
-    scale: Natural,
+    point_size: WideFloat<5>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,11 +48,23 @@ enum ViewState {
     Precise(PreciseViewState),
 }
 
+//impl Default for ViewState {
+//    fn default() -> Self {
+//        Self::Fast(FastViewState {
+//            center: Point { x: 0.0, y: 0.0 },
+//            scale: 200,
+//        })
+//    }
+//}
+
 impl Default for ViewState {
     fn default() -> Self {
-        Self::Fast(FastViewState {
-            center: Point { x: 0.0, y: 0.0 },
-            scale: 200,
+        Self::Precise(PreciseViewState {
+            center: PrecisePoint {
+                x: WideFloat::<5>::default(),
+                y: WideFloat::<5>::default(),
+            },
+            point_size: WideFloat::<5>::try_from(4.0 / 1000.0).unwrap(),
         })
     }
 }
@@ -92,33 +96,25 @@ impl ViewState {
                 );
             }
             ViewState::Precise(ref mut pstate) => {
-                let cx = &pstate.center.x
-                    + Rational::from(point.x as i32 - w as i32 / 2) / Rational::from(&pstate.scale);
-                let cy = &pstate.center.y
-                    + Rational::from(point.y as i32 - h as i32 / 2) / Rational::from(&pstate.scale);
+                let cx = &WideFloat::<5>::from(point.x as i64 - w as i64 / 2) * &pstate.point_size
+                    + &pstate.center.x;
+                let cy = &WideFloat::<5>::from(point.y as i64 - h as i64 / 2) * &pstate.point_size
+                    + &pstate.center.y;
                 let mul = if delta > 0.0 {
-                    Rational::try_from_float_simplest(1.0 + delta)
+                    WideFloat::<5>::try_from(1.0 / (1.0 + delta))
                         .expect("Invalid magnify delta value")
                 } else {
-                    Rational::try_from_float_simplest(-1.0 + delta)
-                        .expect("Invalid magnify delta value")
-                        .neg()
-                        .reciprocal()
+                    WideFloat::<5>::try_from(1.0 - delta).expect("Invalid magnify delta value")
                 };
-                pstate.scale = (mul * Rational::from(&pstate.scale))
-                    .ceiling()
-                    .unsigned_abs();
+                pstate.point_size *= &mul;
                 let dx = cx
-                    - (&pstate.center.x
-                        + Rational::from(point.x as i32 - w as i32 / 2)
-                            / Rational::from(&pstate.scale));
+                    - &(&WideFloat::<5>::from(point.x as i64 - w as i64 / 2) * &pstate.point_size
+                        + &pstate.center.x);
                 let dy = cy
-                    - (&pstate.center.y
-                        + Rational::from(point.y as i32 - h as i32 / 2)
-                            / Rational::from(&pstate.scale));
-                pstate.center.x += dx;
-                pstate.center.y -= dy;
-                pstate.center.approximate_to_scale(&pstate.scale);
+                    - &(&WideFloat::<5>::from(point.y as i64 - h as i64 / 2) * &pstate.point_size
+                        + &pstate.center.y);
+                pstate.center.x += &dx;
+                pstate.center.y -= &dy;
             }
         }
     }
@@ -132,17 +128,12 @@ impl ViewState {
                 }
             }
             ViewState::Precise(ref mut pstate) => {
-                pstate.center = PrecisePoint {
-                    x: &pstate.center.x
-                        - (Rational::try_from_float_simplest(delta_x)
-                            .expect("Invalid pointer position")
-                            / Rational::from(&pstate.scale)),
-                    y: &pstate.center.y
-                        + (Rational::try_from_float_simplest(delta_y)
-                            .expect("Invalid pointer position")
-                            / Rational::from(&pstate.scale)),
-                };
-                pstate.center.approximate_to_scale(&pstate.scale);
+                pstate.center.x -= &(&WideFloat::<5>::try_from(delta_x)
+                    .expect("Invalid pointer position")
+                    * &pstate.point_size);
+                pstate.center.y += &(&WideFloat::<5>::try_from(delta_y)
+                    .expect("Invalid pointer position")
+                    * &pstate.point_size);
             }
         }
     }
