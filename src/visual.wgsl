@@ -1,3 +1,5 @@
+const max: u32 = 1024;
+
 struct VertexOutput {
     @location(0) coordinates: vec2<f32>,
     @builtin(position) position: vec4<f32>,
@@ -20,7 +22,6 @@ var r_color: texture_2d<u32>;
 fn colors(i: u32) -> vec3<f32> {
     let p = 2.0 * radians(180.0) / 3.0;
     var buffer: u32 = 20;
-    var max: u32 = 4294967295;
     let cutoff = 0.2;
     if i < buffer {
         let n = f32(i) / f32(buffer - 1);

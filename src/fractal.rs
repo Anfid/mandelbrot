@@ -1,130 +1,57 @@
+use crate::float::WideFloat;
+use crate::primitives::Dimensions;
 use crate::timer::Timer;
-use crate::wide_float::WideFloat;
 use crate::{Point, PrecisePoint, ViewState};
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-pub const DEPTH_LIMIT: u32 = u32::MAX;
+pub const DEPTH_LIMIT: u32 = 1024;
 pub const FPS: u32 = 30;
 
 pub enum Fractal {
     Fast(Vec<FastPointStatus>, u32),
-    Precise(Vec<PrecisePointStatus>, u32),
 }
 
 impl Fractal {
-    pub fn new(width: u32, height: u32, state: &ViewState) -> Self {
-        let mut fractal = match state {
-            ViewState::Fast(fstate) => {
-                let half_w = width as f64 * 0.5;
-                let half_h = height as f64 * 0.5;
-                let mut buffer = Vec::with_capacity(width as usize * height as usize);
-                let scale_mul = 1.0 / fstate.scale as f64;
-                for px_y in 0..height {
-                    for px_x in 0..width {
-                        let x = fstate.center.x + (px_x as f64 - half_w) * scale_mul;
-                        let y = fstate.center.y + (px_y as f64 - half_h) * scale_mul;
-                        buffer.push(FastPointStatus::Iteration(
-                            0,
-                            FastPointState {
-                                coords: Point { x, y },
-                                x,
-                                y,
-                            },
-                        ));
-                    }
-                }
-                Self::Fast(buffer, 20)
-            }
-            ViewState::Precise(pstate) => {
-                let half_w = width as i64 / 2;
-                let half_h = height as i64 / 2;
-                let mut buffer = Vec::with_capacity(width as usize * height as usize);
-                for px_y in 0..height {
-                    for px_x in 0..width {
-                        let x = &WideFloat::<5>::from(px_x as i64 - half_w) * &pstate.point_size
-                            + &pstate.center.x;
-                        let y = &WideFloat::<5>::from(px_y as i64 - half_h) * &pstate.point_size
-                            + &pstate.center.y;
-                        buffer.push(PrecisePointStatus::Iteration(
-                            0,
-                            PrecisePointState {
-                                x: x.clone(),
-                                y: y.clone(),
-                                coords: PrecisePoint { x, y },
-                            },
-                        ));
-                    }
-                }
-                Self::Precise(buffer, 10)
-            }
-        };
-        fractal.iterate();
-        fractal
-    }
+    pub fn new(dimensions: Dimensions, state: &ViewState) -> Self {
+        let aligned_width =
+            (dimensions.width as u64 / 64 + (dimensions.width as u64 % 64 != 0) as u64) * 64;
 
-    pub fn iterate(&mut self) {
-        let timer = Timer::start();
-        match self {
-            Self::Fast(buffer, iteration_count) => {
-                // Update point statuses
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    buffer
-                        .into_par_iter()
-                        .for_each(|fstatus| iterate_fstatus(fstatus, *iteration_count));
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    buffer
-                        .into_iter()
-                        .for_each(|fstatus| iterate_fstatus(fstatus, *iteration_count));
-                }
-                let duration_ms = timer.stop();
-                let ratio = 1000.0 / (FPS as f64 * duration_ms);
-                *iteration_count = std::cmp::min((*iteration_count as f64 * ratio) as u32, 1000);
-            }
-            Self::Precise(buffer, iteration_count) => {
-                // Update point statuses
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    buffer
-                        .into_par_iter()
-                        .for_each(|pstatus| iterate_pstatus(pstatus, *iteration_count));
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    buffer
-                        .into_iter()
-                        .for_each(|pstatus| iterate_pstatus(pstatus, *iteration_count));
-                }
-                let duration_ms = timer.stop();
-                let ratio = 1000.0 / (FPS as f64 * duration_ms);
-                *iteration_count = std::cmp::min((*iteration_count as f64 * ratio) as u32, 1000);
+        let half_w = aligned_width as f64 * 0.5;
+        let half_h = dimensions.height as f64 * 0.5;
+        let mut buffer = Vec::with_capacity(aligned_width as usize * dimensions.height as usize);
+        let scale_mul = 1.0 / state.scale as f64;
+        for px_y in 0..dimensions.height {
+            for px_x in 0..aligned_width {
+                let x = state.center.x + (px_x as f64 - half_w) * scale_mul;
+                let y = state.center.y + (px_y as f64 - half_h) * scale_mul;
+                buffer.push(FastPointStatus::Iteration(
+                    0,
+                    FastPointState {
+                        coords: Point { x, y },
+                        x,
+                        y,
+                    },
+                ));
             }
         }
+        // TODO: iterate perhaps?
+        //fractal.iterate();
+        Self::Fast(buffer, 20)
     }
 
-    pub fn get_texels(&self) -> Vec<u8> {
+    pub fn get_params(&self) -> Vec<f32> {
         match self {
             Fractal::Fast(buffer, _) => buffer
-                .iter()
-                .map(|s| match s {
-                    FastPointStatus::Done(i) => *i,
-                    FastPointStatus::Iteration(_, _) => DEPTH_LIMIT,
+                .into_iter()
+                .map(|state| {
+                    let FastPointStatus::Iteration(_, coords) = state else {
+                        todo!()
+                    };
+                    [coords.x as f32, coords.y as f32]
                 })
-                .map(u32::to_le_bytes)
                 .flatten()
-                .collect(),
-            Fractal::Precise(buffer, _) => buffer
-                .iter()
-                .map(|s| match s {
-                    PrecisePointStatus::Done(i) => *i,
-                    PrecisePointStatus::Iteration(_, _) => DEPTH_LIMIT,
-                })
-                .map(u32::to_le_bytes)
-                .flatten()
-                .collect(),
+                .collect::<Vec<_>>(),
         }
     }
 
@@ -133,9 +60,6 @@ impl Fractal {
             Fractal::Fast(buffer, _) => {
                 buffer.iter().all(|s| matches!(s, FastPointStatus::Done(_)))
             }
-            Fractal::Precise(buffer, _) => buffer
-                .iter()
-                .all(|s| matches!(s, PrecisePointStatus::Done(_))),
         }
     }
 }
