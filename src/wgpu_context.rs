@@ -1,4 +1,5 @@
-use crate::primitives::Dimensions;
+use crate::primitives::{Dimensions, Point};
+use bytemuck::{Pod, Zeroable};
 use std::borrow::Cow;
 use winit::window::Window;
 
@@ -15,6 +16,7 @@ pub struct RendererContext<'w> {
     render_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     bind_group_layout: wgpu::BindGroupLayout,
+    params_buffer: wgpu::Buffer,
     texture: wgpu::Texture,
 }
 
@@ -26,11 +28,28 @@ pub struct ComputeContext {
     result_buffer: wgpu::Buffer,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct ComputeParams {
+    pub top_left: Point,
+    pub size: Dimensions,
+    pub point_size: f32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct FragmentParams {
+    pub size: Dimensions,
+}
+
 impl<'w> WgpuContext<'w> {
-    pub async fn new(window: &'w Window, params: &[f32]) -> Self {
-        let mut window_size = window.inner_size();
-        window_size.width = window_size.width.max(1);
-        window_size.height = window_size.height.max(1);
+    pub async fn new(window: &'w Window, params: ComputeParams) -> Self {
+        let window_size = window.inner_size();
+        let view_dimensions = Dimensions {
+            width: window_size.width.max(1),
+            height: window_size.height.max(1),
+        };
+        let aligned_dimensions = view_dimensions.align_width_to(64);
 
         // The instance is a handle to our GPU
         let instance = wgpu::Instance::default();
@@ -46,18 +65,24 @@ impl<'w> WgpuContext<'w> {
             .await
             .unwrap();
 
+        let mut device_limits = if cfg!(target_arch = "wasm32") {
+            wgpu::Limits::downlevel_webgl2_defaults()
+        } else {
+            wgpu::Limits::default()
+        }
+        .using_resolution(adapter.limits());
+
+        // TODO: Save the limit and use it for buffer sizing
+        device_limits.max_storage_buffer_binding_size =
+            adapter.limits().max_storage_buffer_binding_size;
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     required_features: wgpu::Features::empty(),
                     // WebGL doesn't support all of wgpu's features, so if
                     // we're building for the web, we'll have to disable some.
-                    required_limits: if cfg!(target_arch = "wasm32") {
-                        wgpu::Limits::downlevel_webgl2_defaults()
-                    } else {
-                        wgpu::Limits::default()
-                    }
-                    .using_resolution(adapter.limits()),
+                    required_limits: device_limits,
                     label: None,
                 },
                 None, // Trace path
@@ -85,7 +110,6 @@ impl<'w> WgpuContext<'w> {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
                             has_dynamic_offset: false,
-                            // Going to have this be None just to be safe.
                             min_binding_size: None,
                         },
                         count: None,
@@ -104,14 +128,11 @@ impl<'w> WgpuContext<'w> {
                 ],
             });
 
-        let aligned_width =
-            (window_size.width as u64 / 64 + (window_size.width as u64 % 64 != 0) as u64) * 64;
-
-        let (params_buffer, result_buffer, compute_bind_group) = create_compute_bind_group(
+        let (compute_params_buffer, result_buffer, compute_bind_group) = create_compute_bind_group(
             &device,
             &queue,
             &compute_bind_group_layout,
-            4 * aligned_width * window_size.height as wgpu::BufferAddress,
+            aligned_dimensions,
             params,
         );
 
@@ -131,41 +152,56 @@ impl<'w> WgpuContext<'w> {
         let render_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: None,
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        sample_type: wgpu::TextureSampleType::Uint,
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            sample_type: wgpu::TextureSampleType::Uint,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
             });
 
-        let texture_extent = wgpu::Extent3d {
-            width: aligned_width as u32,
-            height: window_size.height,
-            depth_or_array_layers: 1,
-        };
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Render itercount"),
-            size: texture_extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R32Uint,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        let texture = device.create_texture(&itercount_texture_desc(aligned_dimensions.into()));
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let fragment_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("FragmentParams"),
+            size: std::mem::size_of::<FragmentParams>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bytes: [u8; std::mem::size_of::<FragmentParams>()] = bytemuck::cast(FragmentParams {
+            size: view_dimensions,
+        });
+        queue.write_buffer(&fragment_params_buffer, 0, &bytes);
 
         let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &render_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&texture_view),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: fragment_params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+            ],
             label: None,
         });
 
@@ -207,7 +243,7 @@ impl<'w> WgpuContext<'w> {
         });
 
         let mut config = surface
-            .get_default_config(&adapter, window_size.width, window_size.height)
+            .get_default_config(&adapter, view_dimensions.width, view_dimensions.height)
             .unwrap();
         config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&device, &config);
@@ -218,6 +254,7 @@ impl<'w> WgpuContext<'w> {
             render_pipeline,
             bind_group: render_bind_group,
             bind_group_layout: render_bind_group_layout,
+            params_buffer: fragment_params_buffer,
             texture,
         };
 
@@ -225,7 +262,7 @@ impl<'w> WgpuContext<'w> {
             bind_group_layout: compute_bind_group_layout,
             pipeline: compute_pipeline,
             bind_group: compute_bind_group,
-            params_buffer,
+            params_buffer: compute_params_buffer,
             result_buffer,
         };
 
@@ -237,17 +274,10 @@ impl<'w> WgpuContext<'w> {
         }
     }
 
-    pub fn resize_and_update_params(&mut self, dimensions: Dimensions, params: &[f32]) {
+    pub fn resize_and_update_params(&mut self, dimensions: Dimensions, params: ComputeParams) {
         self.render.set_dimensions(&self.device, dimensions);
 
-        let aligned_width =
-            (dimensions.width as u64 / 64 + (dimensions.width as u64 % 64 != 0) as u64) * 64;
-
-        let extent = wgpu::Extent3d {
-            width: aligned_width as u32,
-            height: dimensions.height,
-            depth_or_array_layers: 1,
-        };
+        let aligned_dimensions = dimensions.align_width_to(64);
 
         (
             self.compute.params_buffer,
@@ -257,20 +287,18 @@ impl<'w> WgpuContext<'w> {
             &self.device,
             &self.queue,
             &self.compute.bind_group_layout,
-            4 * aligned_width * dimensions.height as wgpu::BufferAddress,
+            aligned_dimensions,
             params,
         );
 
-        self.render.texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R32Uint,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        let bytes: [u8; std::mem::size_of::<FragmentParams>()] =
+            bytemuck::cast(FragmentParams { size: dimensions });
+        self.queue
+            .write_buffer(&self.render.params_buffer, 0, &bytes);
+
+        self.render.texture = self
+            .device
+            .create_texture(&itercount_texture_desc(aligned_dimensions.into()));
         let texture_view = self
             .render
             .texture
@@ -278,18 +306,24 @@ impl<'w> WgpuContext<'w> {
 
         self.render.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &self.render.bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&texture_view),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.render.params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+            ],
             label: None,
         });
     }
 
-    pub fn update_params(&mut self, params: &[f32]) {
-        let params = bytemuck::cast_slice(params);
+    pub fn update_params(&mut self, params: ComputeParams) {
+        let bytes: [u8; std::mem::size_of::<ComputeParams>()] = bytemuck::cast(params);
         self.queue
-            .write_buffer(&self.compute.params_buffer, 0, &params);
+            .write_buffer(&self.compute.params_buffer, 0, &bytes);
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -306,8 +340,8 @@ impl<'w> WgpuContext<'w> {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
 
-        let dimensions = self.render.dimensions();
-        command_encoder.push_debug_group("Compute mandelbrot");
+        let dimensions = self.dimensions();
+        command_encoder.push_debug_group("Compute");
         {
             let mut cpass = command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
@@ -332,7 +366,7 @@ impl<'w> WgpuContext<'w> {
             self.render.texture.size(),
         );
 
-        command_encoder.push_debug_group("Render mandelbrot");
+        command_encoder.push_debug_group("Render");
         {
             let mut rpass = command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -386,22 +420,23 @@ fn create_compute_bind_group(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,
-    size: wgpu::BufferAddress,
-    params: &[f32],
+    size: Dimensions,
+    params: ComputeParams,
 ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup) {
     // Buffer to pass input parameters to the GPU
     let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Compute in"),
-        size: 8 * size,
+        label: Some("ComputeParams"),
+        size: 24.max(std::mem::size_of::<ComputeParams>() as u64),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    queue.write_buffer(&params_buffer, 0, bytemuck::cast_slice(params));
+    let bytes: [u8; std::mem::size_of::<ComputeParams>()] = bytemuck::cast(params);
+    queue.write_buffer(&params_buffer, 0, &bytes);
 
     // Buffer with result produced by the GPU
     let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Compute out"),
-        size: 4 * size,
+        label: Some("ItercountBuffer"),
+        size: (4 * size.width * size.height) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
@@ -421,4 +456,17 @@ fn create_compute_bind_group(
         ],
     });
     (params_buffer, result_buffer, compute_bind_group)
+}
+
+fn itercount_texture_desc(aligned_extent: wgpu::Extent3d) -> wgpu::TextureDescriptor<'static> {
+    wgpu::TextureDescriptor {
+        label: Some("ItercountTexture"),
+        size: aligned_extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R32Uint,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    }
 }

@@ -1,7 +1,8 @@
 #![feature(bigint_helper_methods)]
 
-use fractal::Fractal;
+//use fractal::Fractal;
 use std::collections::HashSet;
+use wgpu_context::ComputeParams;
 
 use crate::float::WideFloat;
 use crate::primitives::{Dimensions, Point, PrecisePoint};
@@ -15,62 +16,71 @@ use winit::{
 };
 
 mod float;
-mod fractal;
+//mod fractal;
 mod primitives;
 mod timer;
 mod wgpu_context;
 
 #[derive(Debug, Clone)]
 struct PreciseViewState {
-    center: PrecisePoint,
+    top_left: PrecisePoint,
     point_size: WideFloat<5>,
 }
 
 #[derive(Debug, Clone)]
 struct ViewState {
-    center: Point,
-    scale: u64,
+    top_left: Point,
+    point_size: f32,
 }
 
-impl Default for ViewState {
-    fn default() -> Self {
+impl ViewState {
+    fn default(dimensions: Dimensions) -> Self {
+        let point_size = 4.0 / dimensions.shortest_side() as f32;
+        let x = -point_size * (dimensions.width / 2) as f32;
+        let y = -point_size * (dimensions.height / 2) as f32;
         Self {
-            center: Point { x: 0.0, y: 0.0 },
-            scale: 200,
+            top_left: Point { x, y },
+            point_size,
+        }
+    }
+
+    fn to_compute_params(&self, dimensions: Dimensions) -> ComputeParams {
+        ComputeParams {
+            top_left: self.top_left,
+            point_size: self.point_size,
+            size: dimensions.align_width_to(64),
         }
     }
 }
 
 impl ViewState {
-    pub fn rescale_to_point(&mut self, delta: f64, point: Option<Point>, dimensions: Dimensions) {
-        let point = point.unwrap_or_default();
-        let cx = self.center.x + (point.x - dimensions.width as f64 / 2.0) / self.scale as f64;
-        let cy = self.center.y + (point.y - dimensions.height as f64 / 2.0) / self.scale as f64;
+    pub fn rescale_to_point(&mut self, delta: f32, point: Option<Point>, dimensions: Dimensions) {
+        let point = point.unwrap_or_else(|| todo!("Center of the screen"));
+        let cx = self.top_left.x + point.x * self.point_size;
+        let cy = self.top_left.y + point.y * self.point_size;
+
         let mul = if delta > 0.0 {
-            1.0 + delta
+            1.0 / (1.0 + delta)
         } else {
-            1.0 / (1.0 - delta)
+            1.0 - delta
         };
-        self.scale = (mul * self.scale as f64).round().abs() as u64;
-        let dx =
-            cx - (&self.center.x + (point.x - dimensions.width as f64 / 2.0) / (self.scale as f64));
-        let dy = cy
-            - (&self.center.y + (point.y - dimensions.height as f64 / 2.0) / (self.scale as f64));
-        self.center.x += dx;
-        self.center.y -= dy;
+        self.point_size *= mul;
+        self.point_size = self.point_size.min(8.0 / dimensions.shortest_side() as f32);
+        let dx = cx - (&self.top_left.x + point.x * self.point_size);
+        let dy = cy - (&self.top_left.y + point.y * self.point_size);
+        self.top_left.x += dx;
+        self.top_left.y += dy;
         log::info!(
             "x: {}, y: {}, scale: {}",
-            self.center.x,
-            self.center.y,
-            self.scale
+            self.top_left.x,
+            self.top_left.y,
+            1.0 / self.point_size,
         );
     }
 
-    fn move_by_screen_delta(&mut self, delta_x: f64, delta_y: f64) {
-        self.center = Point {
-            x: self.center.x - (delta_x / self.scale as f64),
-            y: self.center.y + (delta_y / self.scale as f64),
-        }
+    fn move_by_screen_delta(&mut self, delta_x: f32, delta_y: f32) {
+        self.top_left.x -= delta_x * self.point_size;
+        self.top_left.y -= delta_y * self.point_size;
     }
 }
 
@@ -114,17 +124,16 @@ pub async fn run() {
     }
     let window = builder.with_title("Mandelbrot").build(&event_loop).unwrap();
 
-    let mut state = ViewState::default();
+    let window_size = window.inner_size();
+    let dimensions = Dimensions::new_nonzero(window_size.width, window_size.height);
+
+    let mut view_state = ViewState::default(dimensions);
     let mut input_state = InputState::default();
 
-    let window_size = window.inner_size();
-    let default_dimensions = Dimensions {
-        width: window_size.width.max(1),
-        height: window_size.height.max(1),
-    };
-    let mut fractal_state = Fractal::new(default_dimensions, &state);
-    let starting_params = fractal_state.get_params();
-    let mut wgpu_context = wgpu_context::WgpuContext::new(&window, &starting_params).await;
+    let mut compute_params = view_state.to_compute_params(dimensions);
+    let mut wgpu_context = wgpu_context::WgpuContext::new(&window, compute_params).await;
+
+    let mut view_reset = true;
 
     event_loop
         .run(|event, elwt| match event {
@@ -140,28 +149,32 @@ pub async fn run() {
                     ..
                 } => elwt.exit(),
                 WindowEvent::Resized(new_size) => {
-                    let dimensions = Dimensions {
-                        width: new_size.width.max(1),
-                        height: new_size.height.max(1),
-                    };
-                    fractal_state = Fractal::new(dimensions, &state);
-                    let params = fractal_state.get_params();
-                    wgpu_context.resize_and_update_params(dimensions, &params);
+                    let dimensions = Dimensions::new_nonzero(new_size.width, new_size.height);
+                    if view_reset {
+                        view_state = ViewState::default(dimensions);
+                    }
+                    compute_params = view_state.to_compute_params(dimensions.align_width_to(64));
+                    wgpu_context.resize_and_update_params(dimensions, compute_params);
 
                     window.request_redraw();
                 }
                 WindowEvent::TouchpadMagnify { delta, .. } => {
-                    state.rescale_to_point(*delta, input_state.pointer, wgpu_context.dimensions());
-                    fractal_state = Fractal::new(wgpu_context.dimensions(), &state);
-                    let params = fractal_state.get_params();
-                    wgpu_context.update_params(&params);
+                    view_reset = false;
+                    view_state.rescale_to_point(
+                        *delta as f32,
+                        input_state.pointer,
+                        wgpu_context.dimensions(),
+                    );
+                    compute_params = view_state.to_compute_params(compute_params.size);
+                    wgpu_context.update_params(compute_params);
                     window.request_redraw();
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
+                    view_reset = false;
                     match delta {
                         MouseScrollDelta::LineDelta(_, delta) => {
-                            state.rescale_to_point(
-                                *delta as f64,
+                            view_state.rescale_to_point(
+                                *delta,
                                 input_state.pointer,
                                 wgpu_context.dimensions(),
                             );
@@ -174,16 +187,15 @@ pub async fn run() {
                             if delta == 0.0 {
                                 return;
                             }
-                            state.rescale_to_point(
-                                delta,
+                            view_state.rescale_to_point(
+                                delta as f32,
                                 input_state.pointer,
                                 wgpu_context.dimensions(),
                             );
                         }
                     };
-                    fractal_state = Fractal::new(wgpu_context.dimensions(), &state);
-                    let params = fractal_state.get_params();
-                    wgpu_context.update_params(&params);
+                    compute_params = view_state.to_compute_params(compute_params.size);
+                    wgpu_context.update_params(compute_params);
                     window.request_redraw();
                 }
                 WindowEvent::MouseInput {
@@ -191,6 +203,7 @@ pub async fn run() {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 } => {
+                    view_reset = false;
                     input_state.grab.insert(*device_id);
                 }
                 WindowEvent::CursorMoved {
@@ -198,21 +211,20 @@ pub async fn run() {
                     position,
                 } => {
                     let new_position = Point {
-                        x: position.x,
-                        y: position.y,
+                        x: position.x as f32,
+                        y: position.y as f32,
                     };
                     if !input_state.grab.is_empty() {
                         if let Some(old_position) = &input_state.pointer {
                             let delta_x = new_position.x - old_position.x;
                             let delta_y = new_position.y - old_position.y;
-                            state.move_by_screen_delta(delta_x, delta_y);
-                            fractal_state = Fractal::new(wgpu_context.dimensions(), &state);
-                            let params = fractal_state.get_params();
-                            wgpu_context.update_params(&params);
+                            view_state.move_by_screen_delta(delta_x, delta_y);
+                            compute_params = view_state.to_compute_params(compute_params.size);
+                            wgpu_context.update_params(compute_params);
 
                             // Windows doesn't respect redraw request and requires force render
-                            //renderer_context.render(&wgpu_context);
-                            window.request_redraw();
+                            wgpu_context.render();
+                            //window.request_redraw();
                         }
                     }
                     input_state.pointer = Some(new_position);

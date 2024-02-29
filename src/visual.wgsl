@@ -15,8 +15,16 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> VertexOutput {
     return out;
 }
 
+struct Parameters {
+    dimensions: vec2<u32>,
+}
+
 @group(0)
 @binding(0)
+var<storage, read> params: Parameters;
+
+@group(0)
+@binding(1)
 var r_color: texture_2d<u32>;
 
 fn colors(i: u32) -> vec3<f32> {
@@ -42,9 +50,9 @@ fn colors(i: u32) -> vec3<f32> {
 
 @fragment
 fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
-    let dimensions = textureDimensions(r_color);
-    let x = i32((vertex.coordinates.x + 1.0) / 2.0 * f32(dimensions.x));
-    let y = i32((vertex.coordinates.y + 1.0) / 2.0 * f32(dimensions.y));
-    let tex = textureLoad(r_color, vec2<i32>(x, y), 0);
+    let coords = vec2<f32>(vertex.coordinates.x, -vertex.coordinates.y);
+    let point = vec2<u32>((coords + 1.0) / 2.0 * vec2<f32>(params.dimensions));
+    let tex = textureLoad(r_color, point, 0);
+
     return vec4<f32>(colors(tex.x), 1.0);
 }
