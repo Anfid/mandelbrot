@@ -22,33 +22,29 @@ mod timer;
 mod wgpu_context;
 
 #[derive(Debug, Clone)]
-struct PreciseViewState {
+struct ViewState {
     top_left: PrecisePoint,
     point_size: WideFloat<5>,
 }
 
-#[derive(Debug, Clone)]
-struct ViewState {
-    top_left: Point,
-    point_size: f32,
-}
-
 impl ViewState {
     fn default(dimensions: Dimensions) -> Self {
-        let point_size = 4.0 / dimensions.shortest_side() as f32;
-        let x = -point_size * (dimensions.width / 2) as f32;
-        let y = -point_size * (dimensions.height / 2) as f32;
+        let point_size = WideFloat::<5>::try_from(4.0 / dimensions.shortest_side() as f32)
+            .expect("Invalid dimensions");
+        let x = &-WideFloat::<5>::from(dimensions.width as i32 / 2) * &point_size;
+        let y = &-WideFloat::<5>::from(dimensions.height as i32 / 2) * &point_size;
         Self {
-            top_left: Point { x, y },
+            top_left: PrecisePoint { x, y },
             point_size,
         }
     }
 
     fn to_compute_params(&self, dimensions: Dimensions) -> ComputeParams {
         ComputeParams {
-            top_left: self.top_left,
-            point_size: self.point_size,
             size: dimensions.align_width_to(64),
+            frame_iterations: 256,
+            top_left: self.top_left.clone(),
+            point_step: self.point_size.clone(),
         }
     }
 }
@@ -56,31 +52,43 @@ impl ViewState {
 impl ViewState {
     pub fn rescale_to_point(&mut self, delta: f32, point: Option<Point>, dimensions: Dimensions) {
         let point = point.unwrap_or_else(|| todo!("Center of the screen"));
-        let cx = self.top_left.x + point.x * self.point_size;
-        let cy = self.top_left.y + point.y * self.point_size;
+        let wide_x = WideFloat::<5>::try_from(point.x).expect("Invalid coordinates");
+        let wide_y = WideFloat::<5>::try_from(point.y).expect("Invalid coordinates");
+        let cx = &wide_x * &self.point_size + &self.top_left.x;
+        let cy = &wide_y * &self.point_size + &self.top_left.y;
 
         let mul = if delta > 0.0 {
             1.0 / (1.0 + delta)
         } else {
             1.0 - delta
         };
-        self.point_size *= mul;
-        self.point_size = self.point_size.min(8.0 / dimensions.shortest_side() as f32);
-        let dx = cx - (&self.top_left.x + point.x * self.point_size);
-        let dy = cy - (&self.top_left.y + point.y * self.point_size);
-        self.top_left.x += dx;
-        self.top_left.y += dy;
+        self.point_size *= &WideFloat::<5>::try_from(mul).unwrap();
+        self.point_size = self
+            .point_size
+            .clone()
+            .min(WideFloat::<5>::try_from(0.125 * dimensions.shortest_side() as f32).unwrap());
+        let dx = cx - &(&wide_x * &self.point_size + &self.top_left.x);
+        let dy = cy - &(&wide_y * &self.point_size + &self.top_left.y);
+        self.top_left.x += &dx;
+        self.top_left.y += &dy;
         log::info!(
             "x: {}, y: {}, scale: {}",
-            self.top_left.x,
-            self.top_left.y,
-            1.0 / self.point_size,
+            self.top_left.x.as_f32_round(),
+            self.top_left.y.as_f32_round(),
+            self.point_size.as_f32_round(),
         );
     }
 
     fn move_by_screen_delta(&mut self, delta_x: f32, delta_y: f32) {
-        self.top_left.x -= delta_x * self.point_size;
-        self.top_left.y -= delta_y * self.point_size;
+        self.top_left.x -=
+            &(&WideFloat::<5>::try_from(delta_x).expect("Invalid delta") * &self.point_size);
+        self.top_left.y -=
+            &(&WideFloat::<5>::try_from(delta_y).expect("Invalid delta") * &self.point_size);
+        log::info!(
+            "x: {}, y: {}",
+            self.top_left.x.as_f32_round(),
+            self.top_left.y.as_f32_round(),
+        );
     }
 }
 
@@ -131,7 +139,7 @@ pub async fn run() {
     let mut input_state = InputState::default();
 
     let mut compute_params = view_state.to_compute_params(dimensions);
-    let mut wgpu_context = wgpu_context::WgpuContext::new(&window, compute_params).await;
+    let mut wgpu_context = wgpu_context::WgpuContext::new(&window, &compute_params).await;
 
     let mut view_reset = true;
 
@@ -154,7 +162,7 @@ pub async fn run() {
                         view_state = ViewState::default(dimensions);
                     }
                     compute_params = view_state.to_compute_params(dimensions.align_width_to(64));
-                    wgpu_context.resize_and_update_params(dimensions, compute_params);
+                    wgpu_context.resize_and_update_params(dimensions, &compute_params);
 
                     window.request_redraw();
                 }
@@ -166,7 +174,7 @@ pub async fn run() {
                         wgpu_context.dimensions(),
                     );
                     compute_params = view_state.to_compute_params(compute_params.size);
-                    wgpu_context.update_params(compute_params);
+                    wgpu_context.update_params(&compute_params);
                     window.request_redraw();
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
@@ -195,7 +203,7 @@ pub async fn run() {
                         }
                     };
                     compute_params = view_state.to_compute_params(compute_params.size);
-                    wgpu_context.update_params(compute_params);
+                    wgpu_context.update_params(&compute_params);
                     window.request_redraw();
                 }
                 WindowEvent::MouseInput {
@@ -220,7 +228,7 @@ pub async fn run() {
                             let delta_y = new_position.y - old_position.y;
                             view_state.move_by_screen_delta(delta_x, delta_y);
                             compute_params = view_state.to_compute_params(compute_params.size);
-                            wgpu_context.update_params(compute_params);
+                            wgpu_context.update_params(&compute_params);
 
                             // Windows doesn't respect redraw request and requires force render
                             wgpu_context.render();

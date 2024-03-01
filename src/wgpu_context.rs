@@ -1,7 +1,12 @@
-use crate::primitives::{Dimensions, Point};
+use crate::{
+    float::WideFloat,
+    primitives::{Dimensions, PrecisePoint},
+};
 use bytemuck::{Pod, Zeroable};
 use std::borrow::Cow;
 use winit::window::Window;
+
+const WORD_COUNT: u32 = 5;
 
 pub struct WgpuContext<'w> {
     device: wgpu::Device,
@@ -28,12 +33,28 @@ pub struct ComputeContext {
     result_buffer: wgpu::Buffer,
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone)]
 pub struct ComputeParams {
-    pub top_left: Point,
     pub size: Dimensions,
-    pub point_size: f32,
+    pub frame_iterations: u32,
+    pub top_left: PrecisePoint,
+    pub point_step: WideFloat<5>,
+}
+
+impl ComputeParams {
+    fn encode(&self) -> Vec<u8> {
+        let mut buffer = Vec::with_capacity(self.size_hint() as usize);
+        buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 8]>(self.size));
+        buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.frame_iterations));
+        buffer.extend_from_slice(bytemuck::cast_slice(&self.top_left.x.0));
+        buffer.extend_from_slice(bytemuck::cast_slice(&self.top_left.y.0));
+        buffer.extend_from_slice(bytemuck::cast_slice(&self.point_step.0));
+        buffer
+    }
+
+    fn size_hint(&self) -> u32 {
+        WORD_COUNT * 12 + 16
+    }
 }
 
 #[repr(C)]
@@ -43,7 +64,7 @@ pub struct FragmentParams {
 }
 
 impl<'w> WgpuContext<'w> {
-    pub async fn new(window: &'w Window, params: ComputeParams) -> Self {
+    pub async fn new(window: &'w Window, params: &ComputeParams) -> Self {
         let window_size = window.inner_size();
         let view_dimensions = Dimensions {
             width: window_size.width.max(1),
@@ -274,7 +295,7 @@ impl<'w> WgpuContext<'w> {
         }
     }
 
-    pub fn resize_and_update_params(&mut self, dimensions: Dimensions, params: ComputeParams) {
+    pub fn resize_and_update_params(&mut self, dimensions: Dimensions, params: &ComputeParams) {
         self.render.set_dimensions(&self.device, dimensions);
 
         let aligned_dimensions = dimensions.align_width_to(64);
@@ -320,10 +341,9 @@ impl<'w> WgpuContext<'w> {
         });
     }
 
-    pub fn update_params(&mut self, params: ComputeParams) {
-        let bytes: [u8; std::mem::size_of::<ComputeParams>()] = bytemuck::cast(params);
+    pub fn update_params(&mut self, params: &ComputeParams) {
         self.queue
-            .write_buffer(&self.compute.params_buffer, 0, &bytes);
+            .write_buffer(&self.compute.params_buffer, 0, &params.encode());
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -349,7 +369,7 @@ impl<'w> WgpuContext<'w> {
             });
             cpass.set_pipeline(&self.compute.pipeline);
             cpass.set_bind_group(0, &self.compute.bind_group, &[]);
-            cpass.dispatch_workgroups(dimensions.width, dimensions.height, 1);
+            cpass.dispatch_workgroups(dimensions.width / 64, dimensions.height, 1);
         }
         command_encoder.pop_debug_group();
 
@@ -421,7 +441,7 @@ fn create_compute_bind_group(
     queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,
     size: Dimensions,
-    params: ComputeParams,
+    params: &ComputeParams,
 ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup) {
     // Buffer to pass input parameters to the GPU
     let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -430,8 +450,7 @@ fn create_compute_bind_group(
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let bytes: [u8; std::mem::size_of::<ComputeParams>()] = bytemuck::cast(params);
-    queue.write_buffer(&params_buffer, 0, &bytes);
+    queue.write_buffer(&params_buffer, 0, &params.encode());
 
     // Buffer with result produced by the GPU
     let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
