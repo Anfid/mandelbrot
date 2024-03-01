@@ -62,7 +62,6 @@ impl<const N: usize> TryFrom<f32> for WideFloat<N> {
         buffer.get_mut(offset + 1).map(|v| *v = right);
 
         // TODO: return error on unsupported values
-        // TODO: support negative values
 
         buffer.reverse();
         if neg {

@@ -1,6 +1,5 @@
 #![feature(bigint_helper_methods)]
 
-//use fractal::Fractal;
 use std::collections::HashSet;
 use wgpu_context::ComputeParams;
 
@@ -16,7 +15,6 @@ use winit::{
 };
 
 mod float;
-//mod fractal;
 mod primitives;
 mod timer;
 mod wgpu_context;
