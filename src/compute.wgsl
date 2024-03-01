@@ -47,7 +47,7 @@ fn wide_mandelbrot() -> u32 {
     wide_clone(x2, tmpx);
     while i < max && wide_cmp(wide_add(tmpx, y2), 4) == -1 {
         // y *= 2
-        wide_shl(y, 1u);
+        wide_double(y);
 
         // tmpy = y
         wide_clone(y, tmpy);
@@ -89,8 +89,6 @@ fn main(
     let pixel_x = global_id.x;
     let pixel_y = global_id.y;
     let index = (pixel_y * params.size.x) + pixel_x;
-
-    //iterations[index] = 255u;
 
     // Declare origin_x, origin_y and step
     let origin_x = NumView(0u * word_count);
@@ -207,7 +205,7 @@ fn wide_mul(left: NumView, right: NumView, out: NumView, tmp: NumView) -> NumVie
             mul_carry = res.y;
         }
         let shift = word_count - i - 1;
-        wide_shr(tmp, shift * 32u);
+        wide_shr_words(tmp, shift);
         if mul_carry != 0u {
             arena[tmp.idx + i + 1] = mul_carry;
         }
@@ -221,49 +219,24 @@ fn wide_mul(left: NumView, right: NumView, out: NumView, tmp: NumView) -> NumVie
     return out;
 }
 
-// Mutates `num` by left shifting all its bits by `shift`. Returns the handle to the mutated number
-fn wide_shl(num: NumView, shift: u32) -> NumView {
-    let word_shift = shift / 32u;
-    // Since numbers are stored in LE format, bit rotate has to shift words to the right instead
-    for (var idx = num.idx + word_count - 1; idx >= num.idx; idx--) {
-        let src = idx - word_shift;
-        // Write zero in case of underflow or if `src` is out of bounds of `num`
-        arena[idx] = select(arena[src], 0u, src > idx || src < num.idx);
-    }
-
-    let bit_shift = shift % 32u;
-
-    if bit_shift != 0u {
-        var shift_carry = 0u;
-        for (var i = word_shift; i < word_count; i++) {
-            let tmp = (arena[num.idx + i] << bit_shift) + shift_carry;
-            shift_carry = arena[num.idx + i] >> (32u - bit_shift);
-            arena[num.idx + i] = tmp;
-        }
+// Mutates `num` by doubling it. Returns the handle to the mutated number
+fn wide_double(num: NumView) -> NumView {
+    var shift_carry = 0u;
+    for (var idx = num.idx; idx < num.idx + word_count; idx++) {
+        let tmp = (arena[idx] << 1u) + shift_carry;
+        shift_carry = arena[idx] >> 31u;
+        arena[idx] = tmp;
     }
     return num;
 }
 
-// Mutates `num` by right shifting all its bits by `shift`. Returns the handle to the mutated number
-fn wide_shr(num: NumView, shift: u32) -> NumView {
-    let word_shift = shift / 32u;
+// Mutates `num` by right shifting all its words by `shift`. Returns the handle to the mutated number
+fn wide_shr_words(num: NumView, shift: u32) -> NumView {
     // Since numbers are stored in LE format, bit rotate has to shift words to the left instead
     for (var idx = num.idx; idx < num.idx + word_count; idx++) {
-        let src = idx + word_shift;
+        let src = idx + shift;
         // Write zero in case of overflow or if `src` is out of bounds of `num`
         arena[idx] = select(arena[src], 0u, src < idx || src >= num.idx + word_count);
-    }
-
-    let bit_shift = shift % 32u;
-
-    if bit_shift != 0u && word_shift < word_count {
-        var shift_carry = 0u;
-        for (var i = 0u; i < word_shift; i++) {
-            let idx = num.idx + word_shift - i - 1;
-            let tmp = (arena[idx] >> bit_shift) + shift_carry;
-            shift_carry = arena[idx] << (32u - bit_shift);
-            arena[idx] = tmp;
-        }
     }
     return num;
 }
