@@ -63,10 +63,13 @@ impl ViewState {
             1.0 - delta
         };
         self.step *= &WideFloat::<WORD_COUNT>::try_from(mul).unwrap();
+        // Limit zoom out
         self.step = self.step.clone().min(
             WideFloat::<WORD_COUNT>::try_from(0.125 * self.dimensions.shortest_side() as f32)
                 .unwrap(),
         );
+        // Limit zoom in
+        self.step = WideFloat::<WORD_COUNT>::min_positive().max(self.step.clone());
         let dx = cx - &(&wide_x * &self.step + &self.top_left.x);
         let dy = cy - &(&wide_y * &self.step + &self.top_left.y);
         self.top_left.x += &dx;
