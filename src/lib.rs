@@ -48,7 +48,10 @@ impl ViewState {
 
 impl ViewState {
     pub fn rescale_to_point(&mut self, delta: f32, point: Option<Point>) {
-        let point = point.unwrap_or_else(|| todo!("Center of the screen"));
+        let point = point.unwrap_or_else(|| Point {
+            x: (self.dimensions.unaligned_width / 2) as f32,
+            y: (self.dimensions.height / 2) as f32,
+        });
         let wide_x = WideFloat::<WORD_COUNT>::try_from(point.x).expect("Invalid coordinates");
         let wide_y = WideFloat::<WORD_COUNT>::try_from(point.y).expect("Invalid coordinates");
         let cx = &wide_x * &self.step + &self.top_left.x;
