@@ -81,6 +81,7 @@ impl<const N: usize> From<i32> for WideFloat<N> {
 }
 
 impl<const N: usize> WideFloat<N> {
+    // TODO: bring back f64 conversions
     pub fn as_f32_round(&self) -> f32 {
         if self.0.into_iter().all(|w| w == 0) {
             return 0.0;

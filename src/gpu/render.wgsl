@@ -1,5 +1,3 @@
-const max: u32 = 1024;
-
 struct VertexOutput {
     @location(0) coordinates: vec2<f32>,
     @builtin(position) position: vec4<f32>,
@@ -17,6 +15,7 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> VertexOutput {
 
 struct Parameters {
     dimensions: vec2<u32>,
+    max: u32,
 }
 
 @group(0)
@@ -37,7 +36,7 @@ fn colors(i: u32) -> vec3<f32> {
         let g = 1 - (cos(p) + cutoff) / (2 - cutoff);
         let b = 1 - (cos(2.0 * p) + cutoff) / (2 - cutoff);
         return vec3<f32>(1.0 - n * r, 1.0 - n * g, 1.0 - n * b);
-    } else if i == max {
+    } else if i == params.max {
         return vec3<f32>(0.0, 0.0, 0.0);
     } else {
         let n = sqrt(f32(i - buffer) / 5.0);

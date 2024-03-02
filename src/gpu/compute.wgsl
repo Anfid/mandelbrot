@@ -1,8 +1,9 @@
-const max: u32 = 50u;
+const max: u32 = 10000u;
 
 struct Parameters {
+    iteration_limit: u32,
+    reset: u32,
     size: vec2<u32>,
-    frame_iters: u32,
     words: array<u32>,
 }
 
@@ -14,13 +15,19 @@ var<storage, read> params: Parameters;
 @binding(1)
 var<storage, read_write> iterations: array<u32>;
 
+@group(0)
+@binding(2)
+var<storage, read_write> intermediate: array<u32>;
+
 // Calculate mandelbrot iterations
 //
 // Requires arena to have enough space for 8 wide numbers.
-// Requires first 2 words in the arena to be pre-initialized the following params before the call:
+// Requires first 4 numbers in the arena to be pre-initialized the following params before the call:
 // 1: origin X
 // 2: origin Y
-fn wide_mandelbrot() -> u32 {
+// 3: iteration X
+// 4: iteration Y
+fn wide_mandelbrot(start_iter: u32, iteration_limit: u32) -> u32 {
     let origin_x = NumView(0u * word_count);
     let origin_y = NumView(1u * word_count);
 
@@ -33,19 +40,14 @@ fn wide_mandelbrot() -> u32 {
     let tmpx = NumView(6u * word_count);
     let tmpy = NumView(7u * word_count);
 
-    // x = origin_x
-    wide_clone(origin_x, x);
-    // y = origin_y
-    wide_clone(origin_y, y);
-
     // x2 = x * x
     wide_mul(x, x, x2, tmpx);
     // y2 = y * y
     wide_mul(y, y, y2, tmpy);
 
-    var i: u32 = 0u;
+    var i: u32 = start_iter;
     wide_clone(x2, tmpx);
-    while i < max && wide_cmp(wide_add(tmpx, y2), 4) == -1 {
+    while i < max && i < start_iter + iteration_limit && wide_cmp(wide_add(tmpx, y2), 4) == -1 {
         // y *= 2
         wide_double(y);
 
@@ -122,7 +124,29 @@ fn main(
     // origin_y += offset_y
     wide_add(origin_y, offset_y);
 
-    let iter_count = wide_mandelbrot();
+    var iterstart: u32;
+    if params.reset != 0 {
+        iterstart = 0u;
+        // Set intermediate X and Y results to origin
+        let x = NumView(2u * word_count);
+        let y = NumView(3u * word_count);
+        wide_clone(origin_x, x);
+        wide_clone(origin_y, y);
+    } else {
+        iterstart = iterations[index];
+        // Read intermediate X and Y results
+        for (var i = 0u; i < 2 * word_count; i++) {
+            arena[2 * word_count + i] = intermediate[2 * index * word_count + i];
+        }
+    }
+
+    let iteration_limit = params.iteration_limit;
+    let iter_count = wide_mandelbrot(iterstart, iteration_limit);
+
+    // Write intermediate X and Y results to continue on the next iteration
+    for (var i = 0u; i < 2 * word_count; i++) {
+        intermediate[2 * index * word_count + i] = arena[2 * word_count + i];
+    }
 
     iterations[index] = iter_count;
 }

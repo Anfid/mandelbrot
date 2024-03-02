@@ -1,10 +1,6 @@
 #![feature(bigint_helper_methods)]
 
 use std::collections::HashSet;
-use wgpu_context::ComputeParams;
-
-use crate::float::WideFloat;
-use crate::primitives::{Dimensions, Point, PrecisePoint};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 use winit::{
@@ -15,73 +11,76 @@ use winit::{
 };
 
 mod float;
+mod gpu;
 mod primitives;
 mod timer;
-mod wgpu_context;
+
+use crate::float::WideFloat;
+use crate::gpu::GpuContext;
+use crate::primitives::{Dimensions, Point, PrecisePoint};
+use crate::timer::Timer;
+
+const WORD_COUNT: usize = 5;
+const MAX_DEPTH: usize = 10000;
+const ITER_LIMIT: u32 = 50;
 
 #[derive(Debug, Clone)]
 struct ViewState {
     top_left: PrecisePoint,
-    point_size: WideFloat<5>,
+    dimensions: Dimensions,
+    step: WideFloat<WORD_COUNT>,
 }
 
 impl ViewState {
     fn default(dimensions: Dimensions) -> Self {
-        let point_size = WideFloat::<5>::try_from(4.0 / dimensions.shortest_side() as f32)
+        let point_size = WideFloat::<WORD_COUNT>::try_from(4.0 / dimensions.shortest_side() as f32)
             .expect("Invalid dimensions");
-        let x = &-WideFloat::<5>::from(dimensions.width as i32 / 2) * &point_size;
-        let y = &-WideFloat::<5>::from(dimensions.height as i32 / 2) * &point_size;
+        let x =
+            &-WideFloat::<WORD_COUNT>::from(dimensions.unaligned_width as i32 / 2) * &point_size;
+        let y = &-WideFloat::<WORD_COUNT>::from(dimensions.height as i32 / 2) * &point_size;
         Self {
             top_left: PrecisePoint { x, y },
-            point_size,
-        }
-    }
-
-    fn to_compute_params(&self, dimensions: Dimensions) -> ComputeParams {
-        ComputeParams {
-            size: dimensions.align_width_to(64),
-            frame_iterations: 256,
-            top_left: self.top_left.clone(),
-            point_step: self.point_size.clone(),
+            dimensions,
+            step: point_size,
         }
     }
 }
 
 impl ViewState {
-    pub fn rescale_to_point(&mut self, delta: f32, point: Option<Point>, dimensions: Dimensions) {
+    pub fn rescale_to_point(&mut self, delta: f32, point: Option<Point>) {
         let point = point.unwrap_or_else(|| todo!("Center of the screen"));
-        let wide_x = WideFloat::<5>::try_from(point.x).expect("Invalid coordinates");
-        let wide_y = WideFloat::<5>::try_from(point.y).expect("Invalid coordinates");
-        let cx = &wide_x * &self.point_size + &self.top_left.x;
-        let cy = &wide_y * &self.point_size + &self.top_left.y;
+        let wide_x = WideFloat::<WORD_COUNT>::try_from(point.x).expect("Invalid coordinates");
+        let wide_y = WideFloat::<WORD_COUNT>::try_from(point.y).expect("Invalid coordinates");
+        let cx = &wide_x * &self.step + &self.top_left.x;
+        let cy = &wide_y * &self.step + &self.top_left.y;
 
         let mul = if delta > 0.0 {
             1.0 / (1.0 + delta)
         } else {
             1.0 - delta
         };
-        self.point_size *= &WideFloat::<5>::try_from(mul).unwrap();
-        self.point_size = self
-            .point_size
-            .clone()
-            .min(WideFloat::<5>::try_from(0.125 * dimensions.shortest_side() as f32).unwrap());
-        let dx = cx - &(&wide_x * &self.point_size + &self.top_left.x);
-        let dy = cy - &(&wide_y * &self.point_size + &self.top_left.y);
+        self.step *= &WideFloat::<WORD_COUNT>::try_from(mul).unwrap();
+        self.step = self.step.clone().min(
+            WideFloat::<WORD_COUNT>::try_from(0.125 * self.dimensions.shortest_side() as f32)
+                .unwrap(),
+        );
+        let dx = cx - &(&wide_x * &self.step + &self.top_left.x);
+        let dy = cy - &(&wide_y * &self.step + &self.top_left.y);
         self.top_left.x += &dx;
         self.top_left.y += &dy;
         log::info!(
             "x: {}, y: {}, scale: {}",
             self.top_left.x.as_f32_round(),
             self.top_left.y.as_f32_round(),
-            self.point_size.as_f32_round(),
+            self.step.as_f32_round(),
         );
     }
 
     fn move_by_screen_delta(&mut self, delta_x: f32, delta_y: f32) {
         self.top_left.x -=
-            &(&WideFloat::<5>::try_from(delta_x).expect("Invalid delta") * &self.point_size);
+            &(&WideFloat::<WORD_COUNT>::try_from(delta_x).expect("Invalid delta") * &self.step);
         self.top_left.y -=
-            &(&WideFloat::<5>::try_from(delta_y).expect("Invalid delta") * &self.point_size);
+            &(&WideFloat::<WORD_COUNT>::try_from(delta_y).expect("Invalid delta") * &self.step);
         log::info!(
             "x: {}, y: {}",
             self.top_left.x.as_f32_round(),
@@ -132,12 +131,18 @@ pub async fn run() {
 
     let window_size = window.inner_size();
     let dimensions = Dimensions::new_nonzero(window_size.width, window_size.height);
-
     let mut view_state = ViewState::default(dimensions);
+
     let mut input_state = InputState::default();
 
-    let mut compute_params = view_state.to_compute_params(dimensions);
-    let mut wgpu_context = wgpu_context::WgpuContext::new(&window, &compute_params).await;
+    let mut gpu_context = GpuContext::new(
+        &window,
+        dimensions,
+        &view_state.top_left,
+        &view_state.step,
+        ITER_LIMIT,
+    )
+    .await;
 
     let mut view_reset = true;
 
@@ -159,50 +164,37 @@ pub async fn run() {
                     if view_reset {
                         view_state = ViewState::default(dimensions);
                     }
-                    compute_params = view_state.to_compute_params(dimensions.align_width_to(64));
-                    wgpu_context.resize_and_update_params(dimensions, &compute_params);
+                    gpu_context.resize_and_update_params(
+                        dimensions,
+                        &view_state.top_left,
+                        &view_state.step,
+                    );
 
                     window.request_redraw();
                 }
                 WindowEvent::TouchpadMagnify { delta, .. } => {
                     view_reset = false;
-                    view_state.rescale_to_point(
-                        *delta as f32,
-                        input_state.pointer,
-                        wgpu_context.dimensions(),
-                    );
-                    compute_params = view_state.to_compute_params(compute_params.size);
-                    wgpu_context.update_params(&compute_params);
+                    view_state.rescale_to_point(*delta as f32, input_state.pointer);
+                    gpu_context.update_params(&view_state.top_left, &view_state.step);
                     window.request_redraw();
                 }
-                WindowEvent::MouseWheel { delta, .. } => {
+                WindowEvent::MouseWheel {
+                    delta: scroll_delta,
+                    ..
+                } => {
                     view_reset = false;
-                    match delta {
-                        MouseScrollDelta::LineDelta(_, delta) => {
-                            view_state.rescale_to_point(
-                                *delta,
-                                input_state.pointer,
-                                wgpu_context.dimensions(),
-                            );
-                        }
+                    let delta = match scroll_delta {
+                        MouseScrollDelta::LineDelta(_, delta) => *delta,
                         MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition {
                             x: _,
                             y: delta,
-                        }) => {
-                            let delta = *delta / 500.0;
-                            if delta == 0.0 {
-                                return;
-                            }
-                            view_state.rescale_to_point(
-                                delta as f32,
-                                input_state.pointer,
-                                wgpu_context.dimensions(),
-                            );
-                        }
+                        }) => (*delta / 500.0) as f32,
                     };
-                    compute_params = view_state.to_compute_params(compute_params.size);
-                    wgpu_context.update_params(&compute_params);
-                    window.request_redraw();
+                    if delta != 0.0 {
+                        view_state.rescale_to_point(delta, input_state.pointer);
+                        gpu_context.update_params(&view_state.top_left, &view_state.step);
+                        window.request_redraw();
+                    }
                 }
                 WindowEvent::MouseInput {
                     device_id,
@@ -225,12 +217,9 @@ pub async fn run() {
                             let delta_x = new_position.x - old_position.x;
                             let delta_y = new_position.y - old_position.y;
                             view_state.move_by_screen_delta(delta_x, delta_y);
-                            compute_params = view_state.to_compute_params(compute_params.size);
-                            wgpu_context.update_params(&compute_params);
+                            gpu_context.update_params(&view_state.top_left, &view_state.step);
 
-                            // Windows doesn't respect redraw request and requires force render
-                            wgpu_context.render();
-                            //window.request_redraw();
+                            window.request_redraw();
                         }
                     }
                     input_state.pointer = Some(new_position);
@@ -247,14 +236,17 @@ pub async fn run() {
                 WindowEvent::Touch(_touch) => {
                     todo!("Handle touch")
                 }
-                WindowEvent::RedrawRequested => match wgpu_context.render() {
+                WindowEvent::RedrawRequested => match gpu_context.render() {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
                     Err(e) => log::warn!("Render error: {:?}", e),
                 },
                 _ => {}
             },
-            Event::AboutToWait => {}
+            Event::AboutToWait => {
+                gpu_context.iterate_on_render(ITER_LIMIT);
+                window.request_redraw();
+            }
             _ => {}
         })
         .unwrap();

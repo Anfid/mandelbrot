@@ -4,37 +4,24 @@ use bytemuck::{Pod, Zeroable};
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct Dimensions {
-    pub width: u32,
+    pub unaligned_width: u32,
     pub height: u32,
 }
 
 impl Dimensions {
     pub fn new_nonzero(width: u32, height: u32) -> Self {
         Self {
-            width: width.max(1),
+            unaligned_width: width.max(1),
             height: height.max(1),
         }
     }
 
-    pub fn align_width_to(&self, alignment: u32) -> Self {
-        Dimensions {
-            width: self.width.div_ceil(alignment) * alignment,
-            height: self.height,
-        }
+    pub fn aligned_width(&self, alignment: u32) -> u32 {
+        self.unaligned_width.div_ceil(alignment) * alignment
     }
 
     pub fn shortest_side(&self) -> u32 {
-        self.width.min(self.height)
-    }
-}
-
-impl Into<wgpu::Extent3d> for Dimensions {
-    fn into(self) -> wgpu::Extent3d {
-        wgpu::Extent3d {
-            width: self.width,
-            height: self.height,
-            depth_or_array_layers: 1,
-        }
+        self.unaligned_width.min(self.height)
     }
 }
 
