@@ -285,13 +285,13 @@ fn wide_from_u32(src: u32, dst: NumView) {
 // Add with carry on overflow. `carry` MUST be 0 or 1
 fn carrying_add(left: u32, right: u32, carry: u32) -> vec2<u32> {
     let sum = left + right + carry;
-    return vec2<u32>(sum, u32(sum < left));
+    return vec2<u32>(sum, u32(sum < left || (sum == left && carry != 0)));
 }
 
 // Add with borrow on underflow. `borrow` MUST be 0 or 1
 fn borrowing_sub(left: u32, right: u32, borrow: u32) -> vec2<u32> {
     let diff = left - right - borrow;
-    return vec2<u32>(diff, u32(diff > left));
+    return vec2<u32>(diff, u32(diff > left || (diff == left && borrow != 0)));
 }
 
 // Multiply with carry on overflow
