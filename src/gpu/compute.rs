@@ -153,7 +153,8 @@ impl<'p, 's> ComputeParams<'p, 's> {
         let mut buffer = Vec::with_capacity(Self::size_hint() as usize);
         buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.iteration_limit));
         buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.reset as u32));
-        buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 8]>(self.size));
+        buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.size.aligned_width(64)));
+        buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.size.height));
         buffer.extend_from_slice(bytemuck::cast_slice(&self.top_left.x.0));
         buffer.extend_from_slice(bytemuck::cast_slice(&self.top_left.y.0));
         buffer.extend_from_slice(bytemuck::cast_slice(&self.step.0));
