@@ -1,4 +1,4 @@
-const max: u32 = 10000u;
+const max: u32 = 4294967295u;
 
 struct Parameters {
     iteration_limit: u32,

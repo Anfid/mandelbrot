@@ -246,7 +246,7 @@ impl<'w> GpuContext<'w> {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        self.state.depth = (self.state.depth + self.state.iteration_limit).min(MAX_DEPTH as u32);
+        self.state.depth = (self.state.depth + self.state.iteration_limit).min(MAX_DEPTH);
         self.render_bindings.write(
             &self.queue,
             FragmentParams {

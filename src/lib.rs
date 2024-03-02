@@ -21,7 +21,7 @@ use crate::primitives::{Dimensions, Point, PrecisePoint};
 use crate::timer::Timer;
 
 const WORD_COUNT: usize = 5;
-const MAX_DEPTH: usize = 10000;
+const MAX_DEPTH: u32 = u32::MAX;
 const ITER_LIMIT: u32 = 50;
 
 #[derive(Debug, Clone)]
