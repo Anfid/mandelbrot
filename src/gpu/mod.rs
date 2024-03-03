@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use winit::window::Window;
 
 use crate::float::WideFloat;
+use crate::fps_balancer::FpsBalancer;
 use crate::primitives::{Dimensions, PrecisePoint};
 use crate::{MAX_DEPTH, WORD_COUNT};
 
@@ -34,7 +35,22 @@ pub struct ParamsState {
     /// Current calculated depth
     depth: u32,
     /// Amount of iterations for this invocation
-    iteration_limit: u32,
+    fps_balancer: FpsBalancer,
+
+    update: Option<ParamsUpdate>,
+    busy: bool,
+}
+
+enum ParamsUpdate {
+    Move {
+        top_left: PrecisePoint,
+        step: WideFloat<WORD_COUNT>,
+    },
+    Resize {
+        dimensions: Dimensions,
+        top_left: PrecisePoint,
+        step: WideFloat<WORD_COUNT>,
+    },
 }
 
 impl<'w> GpuContext<'w> {
@@ -43,8 +59,15 @@ impl<'w> GpuContext<'w> {
         dimensions: Dimensions,
         top_left: &PrecisePoint,
         step: &WideFloat<WORD_COUNT>,
-        iteration_limit: u32,
+        fps: f64,
     ) -> Self {
+        let state = ParamsState {
+            depth: 0,
+            fps_balancer: FpsBalancer::new(fps),
+            update: None,
+            busy: false,
+        };
+
         // GPU handle
         let instance = wgpu::Instance::default();
 
@@ -59,12 +82,7 @@ impl<'w> GpuContext<'w> {
             .await
             .unwrap();
 
-        let mut device_limits = if cfg!(target_arch = "wasm32") {
-            wgpu::Limits::downlevel_webgl2_defaults()
-        } else {
-            wgpu::Limits::default()
-        }
-        .using_resolution(adapter.limits());
+        let mut device_limits = wgpu::Limits::default().using_resolution(adapter.limits());
 
         // TODO: Save the limit and use it for buffer sizing
         device_limits.max_storage_buffer_binding_size =
@@ -98,7 +116,12 @@ impl<'w> GpuContext<'w> {
         let compute_bindings =
             ComputeBindings::new(&device, &compute_bind_group_layout, dimensions).write(
                 &queue,
-                &ComputeParams::new(dimensions, top_left, step, iteration_limit),
+                &ComputeParams::new(
+                    dimensions,
+                    top_left,
+                    step,
+                    state.fps_balancer.present_iterations,
+                ),
             );
 
         let compute_pipeline_layout =
@@ -180,64 +203,52 @@ impl<'w> GpuContext<'w> {
             render_bind_group_layout,
             render_pipeline,
             render_bindings,
-            state: ParamsState {
-                depth: 0,
-                iteration_limit,
-            },
+            state,
         }
     }
 
     pub fn resize_and_update_params(
         &mut self,
         dimensions: Dimensions,
-        top_left: &PrecisePoint,
-        step: &WideFloat<WORD_COUNT>,
+        top_left: PrecisePoint,
+        step: WideFloat<WORD_COUNT>,
     ) {
-        // Reconfigure the surface
-        self.config.width = dimensions.unaligned_width;
-        self.config.height = dimensions.height;
-        self.surface.configure(&self.device, &self.config);
-
-        // Resize compute shader bindings
-        self.compute_bindings =
-            ComputeBindings::new(&self.device, &self.compute_bind_group_layout, dimensions).write(
-                &self.queue,
-                &ComputeParams::new(dimensions, top_left, step, self.state.iteration_limit),
-            );
-
-        // Reset calculated depth
-        self.state.depth = 0;
-
-        // Resize render shader bindings
-        self.render_bindings =
-            RenderBindings::new(&self.device, &self.render_bind_group_layout, dimensions).write(
-                &self.queue,
-                FragmentParams {
-                    size: dimensions,
-                    depth: 0,
-                },
-            );
+        self.state.update = Some(ParamsUpdate::Resize {
+            dimensions,
+            top_left,
+            step,
+        });
     }
 
-    pub fn update_params(&mut self, top_left: &PrecisePoint, step: &WideFloat<WORD_COUNT>) {
-        self.state.depth = 0;
-        self.compute_bindings.write(
-            &self.queue,
-            &ComputeParams::new(
-                self.dimensions(),
-                top_left,
-                step,
-                self.state.iteration_limit,
-            ),
-        );
-    }
-
-    pub fn iterate_on_render(&mut self, iterations: u32) {
-        self.state.iteration_limit = iterations;
-        self.compute_bindings.write_iterate(&self.queue, iterations);
+    pub fn update_params(&mut self, new_top_left: PrecisePoint, new_step: WideFloat<WORD_COUNT>) {
+        match &mut self.state.update {
+            Some(ParamsUpdate::Resize { top_left, step, .. }) => {
+                *top_left = new_top_left;
+                *step = new_step;
+            }
+            update @ _ => {
+                *update = Some(ParamsUpdate::Move {
+                    top_left: new_top_left,
+                    step: new_step,
+                })
+            }
+        }
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        if self.state.busy {
+            // TODO:
+            return Ok(());
+        }
+        self.state.busy = true;
+        if self.state.update.is_none() {
+            self.state.fps_balancer.start_iteration_frame();
+        } else {
+            self.state.fps_balancer.start_presentation_frame();
+        }
+
+        self.apply_updates();
+
         let frame = self
             .surface
             .get_current_texture()
@@ -246,7 +257,12 @@ impl<'w> GpuContext<'w> {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        self.state.depth = (self.state.depth + self.state.iteration_limit).min(MAX_DEPTH);
+        let iterations = if self.state.depth == 0 {
+            self.state.fps_balancer.present_iterations
+        } else {
+            self.state.fps_balancer.iteration_iterations
+        };
+        self.state.depth = (self.state.depth + iterations).min(MAX_DEPTH);
         self.render_bindings.write(
             &self.queue,
             FragmentParams {
@@ -314,10 +330,83 @@ impl<'w> GpuContext<'w> {
         Ok(())
     }
 
+    pub fn poll(&self) -> wgpu::MaintainResult {
+        self.device.poll(wgpu::Maintain::Poll)
+    }
+
+    pub fn on_render_done(&mut self) {
+        self.state.busy = false;
+        self.state.fps_balancer.end_frame();
+    }
+
     pub fn dimensions(&self) -> Dimensions {
         Dimensions {
             unaligned_width: self.config.width,
             height: self.config.height,
+        }
+    }
+
+    fn apply_updates(&mut self) {
+        match self.state.update.take() {
+            Some(ParamsUpdate::Move { top_left, step }) => {
+                // Reset calculated depth
+                self.state.depth = 0;
+
+                self.compute_bindings.write(
+                    &self.queue,
+                    &ComputeParams::new(
+                        self.dimensions(),
+                        &top_left,
+                        &step,
+                        self.state.fps_balancer.present_iterations,
+                    ),
+                );
+            }
+            Some(ParamsUpdate::Resize {
+                dimensions,
+                top_left,
+                step,
+            }) => {
+                // Reset calculated depth
+                self.state.depth = 0;
+
+                // Reconfigure the surface
+                self.config.width = dimensions.unaligned_width;
+                self.config.height = dimensions.height;
+                self.surface.configure(&self.device, &self.config);
+
+                // Resize compute shader bindings
+                self.compute_bindings =
+                    ComputeBindings::new(&self.device, &self.compute_bind_group_layout, dimensions)
+                        .write(
+                            &self.queue,
+                            &ComputeParams::new(
+                                dimensions,
+                                &top_left,
+                                &step,
+                                self.state.fps_balancer.present_iterations,
+                            ),
+                        );
+
+                // Resize render shader bindings
+                self.render_bindings =
+                    RenderBindings::new(&self.device, &self.render_bind_group_layout, dimensions)
+                        .write(
+                            &self.queue,
+                            FragmentParams {
+                                size: dimensions,
+                                depth: 0,
+                            },
+                        );
+            }
+            None => {
+                let iterations = if self.state.depth == 0 {
+                    self.state.fps_balancer.present_iterations
+                } else {
+                    self.state.fps_balancer.iteration_iterations
+                };
+                self.compute_bindings.write_iterate(&self.queue, iterations);
+            }
         }
     }
 }

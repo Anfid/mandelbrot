@@ -24,7 +24,7 @@ impl TimerImpl {
     }
 
     fn stop(self) -> f64 {
-        (std::time::Instant::now() - self.0).as_millis() as f64
+        (std::time::Instant::now() - self.0).as_secs_f64() * 1000.0
     }
 }
 

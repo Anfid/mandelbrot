@@ -30,14 +30,15 @@ fn colors(i: u32) -> vec3<f32> {
     let p = 2.0 * radians(180.0) / 3.0;
     var buffer: u32 = 20;
     let cutoff = 0.2;
-    if i < buffer {
+
+    if i == params.max {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    } else if i < buffer {
         let n = f32(i) / f32(buffer - 1);
         let r = 1 - (1 + cutoff) / (2 - cutoff);
         let g = 1 - (cos(p) + cutoff) / (2 - cutoff);
         let b = 1 - (cos(2.0 * p) + cutoff) / (2 - cutoff);
         return vec3<f32>(1.0 - n * r, 1.0 - n * g, 1.0 - n * b);
-    } else if i == params.max {
-        return vec3<f32>(0.0, 0.0, 0.0);
     } else {
         let n = sqrt(f32(i - buffer) / 5.0);
         let r = (cos(n) + cutoff) / (2 - cutoff);

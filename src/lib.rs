@@ -5,12 +5,13 @@ use std::collections::HashSet;
 use wasm_bindgen::prelude::*;
 use winit::{
     event::*,
-    event_loop::{ControlFlow, EventLoop},
+    event_loop::{ControlFlow, EventLoopBuilder},
     keyboard::{KeyCode, PhysicalKey},
     window::WindowBuilder,
 };
 
 mod float;
+mod fps_balancer;
 mod gpu;
 mod primitives;
 mod timer;
@@ -18,11 +19,9 @@ mod timer;
 use crate::float::WideFloat;
 use crate::gpu::GpuContext;
 use crate::primitives::{Dimensions, Point, PrecisePoint};
-use crate::timer::Timer;
 
 const WORD_COUNT: usize = 5;
 const MAX_DEPTH: u32 = u32::MAX;
-const ITER_LIMIT: u32 = 50;
 
 #[derive(Debug, Clone)]
 struct ViewState {
@@ -101,6 +100,12 @@ struct InputState {
     grab: HashSet<DeviceId>,
 }
 
+#[derive(Debug)]
+enum UserEvent {
+    RenderDone,
+    RenderNeedsPolling,
+}
+
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
 pub async fn run() {
     #[cfg(not(target_arch = "wasm32"))]
@@ -113,8 +118,12 @@ pub async fn run() {
         console_log::init().expect("could not initialize logger");
     }
 
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event()
+        .build()
+        .unwrap();
     event_loop.set_control_flow(ControlFlow::Wait);
+
+    let event_loop_proxy = event_loop.create_proxy();
 
     #[allow(unused_mut)]
     let mut builder = WindowBuilder::new();
@@ -146,10 +155,11 @@ pub async fn run() {
         dimensions,
         &view_state.top_left,
         &view_state.step,
-        ITER_LIMIT,
+        30.0,
     )
     .await;
 
+    // Reset to default view on screen resize until any user input
     let mut view_reset = true;
 
     event_loop
@@ -172,8 +182,8 @@ pub async fn run() {
                     }
                     gpu_context.resize_and_update_params(
                         dimensions,
-                        &view_state.top_left,
-                        &view_state.step,
+                        view_state.top_left.clone(),
+                        view_state.step.clone(),
                     );
 
                     window.request_redraw();
@@ -181,7 +191,7 @@ pub async fn run() {
                 WindowEvent::TouchpadMagnify { delta, .. } => {
                     view_reset = false;
                     view_state.rescale_to_point(*delta as f32, input_state.pointer);
-                    gpu_context.update_params(&view_state.top_left, &view_state.step);
+                    gpu_context.update_params(view_state.top_left.clone(), view_state.step.clone());
                     window.request_redraw();
                 }
                 WindowEvent::MouseWheel {
@@ -198,7 +208,8 @@ pub async fn run() {
                     };
                     if delta != 0.0 {
                         view_state.rescale_to_point(delta, input_state.pointer);
-                        gpu_context.update_params(&view_state.top_left, &view_state.step);
+                        gpu_context
+                            .update_params(view_state.top_left.clone(), view_state.step.clone());
                         window.request_redraw();
                     }
                 }
@@ -223,7 +234,10 @@ pub async fn run() {
                             let delta_x = new_position.x - old_position.x;
                             let delta_y = new_position.y - old_position.y;
                             view_state.move_by_screen_delta(delta_x, delta_y);
-                            gpu_context.update_params(&view_state.top_left, &view_state.step);
+                            gpu_context.update_params(
+                                view_state.top_left.clone(),
+                                view_state.step.clone(),
+                            );
 
                             window.request_redraw();
                         }
@@ -243,16 +257,35 @@ pub async fn run() {
                     todo!("Handle touch")
                 }
                 WindowEvent::RedrawRequested => match gpu_context.render() {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        event_loop_proxy
+                            .send_event(UserEvent::RenderNeedsPolling)
+                            .expect("Event loop closed");
+                    }
                     Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
                     Err(e) => log::warn!("Render error: {:?}", e),
                 },
                 _ => {}
             },
-            Event::AboutToWait => {
-                gpu_context.iterate_on_render(ITER_LIMIT);
-                window.request_redraw();
-            }
+            Event::AboutToWait => {}
+            Event::UserEvent(event) => match event {
+                UserEvent::RenderDone => {
+                    gpu_context.on_render_done();
+                    window.request_redraw()
+                }
+                UserEvent::RenderNeedsPolling => match gpu_context.poll() {
+                    wgpu::MaintainResult::SubmissionQueueEmpty => {
+                        event_loop_proxy
+                            .send_event(UserEvent::RenderDone)
+                            .expect("Event loop closed");
+                    }
+                    wgpu::MaintainResult::Ok => {
+                        event_loop_proxy
+                            .send_event(UserEvent::RenderNeedsPolling)
+                            .expect("Event loop closed");
+                    }
+                },
+            },
             _ => {}
         })
         .unwrap();

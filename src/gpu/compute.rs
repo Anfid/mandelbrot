@@ -12,7 +12,7 @@ pub struct ComputeParams<'p, 's> {
 pub struct ComputeBindings {
     pub(super) bind_group: wgpu::BindGroup,
     pub(super) params_buffer: wgpu::Buffer,
-    pub(super) intermediate_buffer: wgpu::Buffer,
+    pub(super) _intermediate_buffer: wgpu::Buffer,
     pub(super) result_buffer: wgpu::Buffer,
 }
 
@@ -105,7 +105,7 @@ impl ComputeBindings {
 
         UninitializedComputeBindings(Self {
             params_buffer,
-            intermediate_buffer,
+            _intermediate_buffer: intermediate_buffer,
             result_buffer,
             bind_group,
         })
