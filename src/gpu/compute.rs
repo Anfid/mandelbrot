@@ -71,7 +71,7 @@ impl ComputeBindings {
         // Buffer with the cache for iterative computation
         let intermediate_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Compute Intermediate"),
-            size: (10 * 4 * size.aligned_width(64) * size.height) as u64,
+            size: (2 * WORD_COUNT as u32 * 4 * size.aligned_width(64) * size.height) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });

@@ -1,4 +1,5 @@
 use crate::float::WideFloat;
+use crate::WORD_COUNT;
 use bytemuck::{Pod, Zeroable};
 
 #[repr(C)]
@@ -27,8 +28,8 @@ impl Dimensions {
 
 #[derive(Debug, Default, Clone)]
 pub struct PrecisePoint {
-    pub x: WideFloat<5>,
-    pub y: WideFloat<5>,
+    pub x: WideFloat<WORD_COUNT>,
+    pub y: WideFloat<WORD_COUNT>,
 }
 
 #[repr(C)]
