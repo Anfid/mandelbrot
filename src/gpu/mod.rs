@@ -232,7 +232,7 @@ impl<'w> GpuContext<'w> {
                 *top_left = new_top_left;
                 *step = new_step;
             }
-            update @ _ => {
+            update => {
                 *update = Some(ParamsUpdate::Move {
                     top_left: new_top_left,
                     step: new_step,

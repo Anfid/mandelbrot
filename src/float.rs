@@ -20,7 +20,7 @@ fn isolate_mantissa(f: f32) -> u32 {
 }
 
 fn isolate_exponent(f: f32) -> u32 {
-    (f.to_bits() >> f32::MANTISSA_DIGITS - 1) as u32 & 0xff
+    (f.to_bits() >> (f32::MANTISSA_DIGITS - 1)) & 0xff
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -43,23 +43,27 @@ impl<const N: usize> TryFrom<f32> for WideFloat<N> {
         if e == 0 {
             return Ok(WideFloat::default());
         }
-        let v = isolate_mantissa(value) << WORD_WIDTH as u32 - f32::MANTISSA_DIGITS
-            | 1 << WORD_WIDTH - 1;
+        let v = isolate_mantissa(value) << (WORD_WIDTH as u32 - f32::MANTISSA_DIGITS)
+            | 1 << (WORD_WIDTH - 1);
 
         let shift = 0x7e_i32 - e as i32 + WORD_WIDTH as i32;
         let offset = shift as usize / WORD_WIDTH;
 
-        let left = v >> shift % WORD_WIDTH as i32;
+        let left = v >> (shift % WORD_WIDTH as i32);
         let right = if shift % WORD_WIDTH as i32 != 0 {
-            v << WORD_WIDTH - shift as usize % WORD_WIDTH
+            v << (WORD_WIDTH - shift as usize % WORD_WIDTH)
         } else {
             0
         };
 
         let mut buffer = [0; N];
 
-        buffer.get_mut(offset).map(|v| *v = left);
-        buffer.get_mut(offset + 1).map(|v| *v = right);
+        if let Some(v) = buffer.get_mut(offset) {
+            *v = left;
+        }
+        if let Some(v) = buffer.get_mut(offset + 1) {
+            *v = right;
+        }
 
         // TODO: return error on unsupported values
 
@@ -120,7 +124,7 @@ impl<const N: usize> WideFloat<N> {
             mantissa << shift | second_word >> (WORD_WIDTH - shift as usize)
         };
 
-        let f = f32::from_bits((exponent << f32::MANTISSA_DIGITS - 1) | v);
+        let f = f32::from_bits((exponent << (f32::MANTISSA_DIGITS - 1)) | v);
         if neg {
             -f
         } else {
@@ -257,7 +261,7 @@ impl<const N: usize> ShrAssign<usize> for WideFloat<N> {
             let mut carry = 0;
             for w in self.0.iter_mut().rev().take(N - rotate) {
                 let tmp = (*w >> shift) + carry;
-                carry = *w << WORD_WIDTH - shift;
+                carry = *w << (WORD_WIDTH - shift);
                 *w = tmp;
             }
         }
@@ -275,7 +279,7 @@ impl<const N: usize> ShlAssign<usize> for WideFloat<N> {
             let mut carry = 0;
             for w in self.0.iter_mut().take(N - rotate) {
                 let tmp = (*w << shift) + carry;
-                carry = *w >> WORD_WIDTH - shift;
+                carry = *w >> (WORD_WIDTH - shift);
                 *w = tmp;
             }
         }

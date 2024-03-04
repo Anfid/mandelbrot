@@ -51,7 +51,7 @@ impl ViewState {
 impl ViewState {
     pub fn rescale_to_point(&mut self, delta: f32, point: Option<Point>) {
         let scaled_dimensions = self.dimensions.scale_to(self.window_scale);
-        let point = point.unwrap_or_else(|| Point {
+        let point = point.unwrap_or(Point {
             x: (self.dimensions.width / 2) as f32,
             y: (self.dimensions.height / 2) as f32,
         });
