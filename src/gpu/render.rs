@@ -1,10 +1,10 @@
-use crate::primitives::Dimensions;
+use crate::primitives::ScaledDimensions;
 use bytemuck::{Pod, Zeroable};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct FragmentParams {
-    pub size: Dimensions,
+    pub size: ScaledDimensions,
     pub depth: u32,
 }
 
@@ -59,7 +59,7 @@ impl RenderBindings {
     pub fn new(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
-        size: Dimensions,
+        size: ScaledDimensions,
     ) -> UninitializedRenderBindings {
         let texture = device.create_texture(&Self::itercount_texture_desc(wgpu::Extent3d {
             width: size.aligned_width(64),

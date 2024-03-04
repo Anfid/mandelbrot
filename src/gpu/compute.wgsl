@@ -155,7 +155,7 @@ fn main(
 
 // Override variables aren't available yet, temporary bandaid
 // Tracking issue: https://github.com/gfx-rs/wgpu/issues/4484
-const word_count: u32 = 5;
+const word_count: u32 = 8;
 
 const arena_size: u32 = word_count * 8;
 var<private> arena: array<u32, arena_size>;

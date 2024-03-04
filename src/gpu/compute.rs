@@ -1,10 +1,14 @@
-use crate::{float::WideFloat, primitives::PrecisePoint, Dimensions, WORD_COUNT};
+use crate::{
+    float::WideFloat,
+    primitives::{PrecisePoint, ScaledDimensions},
+    WORD_COUNT,
+};
 
 #[derive(Debug, Clone)]
 pub struct ComputeParams<'p, 's> {
     iteration_limit: u32,
     reset: bool,
-    size: Dimensions,
+    size: ScaledDimensions,
     top_left: &'p PrecisePoint,
     step: &'s WideFloat<WORD_COUNT>,
 }
@@ -58,7 +62,7 @@ impl ComputeBindings {
     pub fn new(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
-        size: Dimensions,
+        size: ScaledDimensions,
     ) -> UninitializedComputeBindings {
         // Buffer to pass input parameters to the GPU
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -135,7 +139,7 @@ impl UninitializedComputeBindings {
 
 impl<'p, 's> ComputeParams<'p, 's> {
     pub fn new(
-        size: Dimensions,
+        size: ScaledDimensions,
         top_left: &'p PrecisePoint,
         step: &'s WideFloat<WORD_COUNT>,
         iteration_limit: u32,
