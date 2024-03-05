@@ -21,7 +21,7 @@ var<storage, read_write> intermediate: array<u32>;
 
 // Calculate mandelbrot iterations
 //
-// Requires arena to have enough space for 8 wide numbers.
+// Requires arena to have enough space for 7 wide numbers.
 // Requires first 4 numbers in the arena to be pre-initialized the following params before the call:
 // 1: origin X
 // 2: origin Y
@@ -37,25 +37,33 @@ fn wide_mandelbrot(start_iter: u32, iteration_limit: u32) -> u32 {
     let x2 = NumView(4u * word_count);
     let y2 = NumView(5u * word_count);
 
-    let tmpx = NumView(6u * word_count);
-    let tmpy = NumView(7u * word_count);
+    let tmp = NumView(6u * word_count);
 
     // x2 = x * x
-    wide_mul(x, x, x2, tmpx);
+    wide_square(x, x2);
     // y2 = y * y
-    wide_mul(y, y, y2, tmpy);
+    wide_square(y, y2);
 
     var i: u32 = start_iter;
-    wide_clone(x2, tmpx);
-    while i < max && i < start_iter + iteration_limit && wide_cmp(wide_add(tmpx, y2), 4) == -1 {
-        // y *= 2
-        wide_double(y);
+    wide_clone(x2, tmp);
+    while i < max && i < start_iter + iteration_limit && wide_cmp(wide_add(tmp, y2), 4) == -1 {
+        // y = square(x2 + y2) - x2 - y2 + origin_y
+        // x = x2 - y2 + origin_x
 
         // tmpy = y
-        wide_clone(y, tmpy);
+        wide_clone(y, tmp);
 
-        // y = x * tmpy
-        wide_mul(x, tmpy, y, tmpx);
+        // tmpy += x
+        wide_add(tmp, x);
+
+        // y = tmpy * tmpy
+        wide_square(tmp, y);
+
+        // y -= y2
+        wide_sub(y, y2);
+
+        // y -= x2
+        wide_sub(y, x2);
 
         // y += origin_y
         wide_add(y, origin_y);
@@ -70,13 +78,13 @@ fn wide_mandelbrot(start_iter: u32, iteration_limit: u32) -> u32 {
         wide_add(x, origin_x);
 
         // x2 = x * x
-        wide_mul(x, x, x2, tmpx);
+        wide_square(x, x2);
 
         // y2 = y * y
-        wide_mul(y, y, y2, tmpy);
+        wide_square(y, y2);
 
         i++;
-        wide_clone(x2, tmpx);
+        wide_clone(x2, tmp);
     }
 
     return i;
@@ -105,19 +113,13 @@ fn main(
     let offset_x = NumView(3u * word_count);
     let offset_y = NumView(4u * word_count);
 
-    let wide_pixel_x = NumView(5u * word_count);
-    let wide_pixel_y = NumView(6u * word_count);
-    let tmp = NumView(7u * word_count);
-
-    // wide_pixel_x = pixel_x
-    wide_from_u32(pixel_x, wide_pixel_x);
-    // wide_pixel_y = pixel_y
-    wide_from_u32(pixel_y, wide_pixel_y);
-
     // offset_x = step * pixel_x
-    wide_mul(wide_pixel_x, step, offset_x, tmp);
+    wide_clone(step, offset_x);
+    wide_mul_u32(offset_x, pixel_x);
+
     // offset_y = step * pixel_y
-    wide_mul(wide_pixel_y, step, offset_y, tmp);
+    wide_clone(step, offset_y);
+    wide_mul_u32(offset_y, pixel_y);
 
     // origin_x += offset_x
     wide_add(origin_x, offset_x);
@@ -157,7 +159,7 @@ fn main(
 // Tracking issue: https://github.com/gfx-rs/wgpu/issues/4484
 const word_count: u32 = 8;
 
-const arena_size: u32 = word_count * 8;
+const arena_size: u32 = word_count * 7;
 var<private> arena: array<u32, arena_size>;
 
 struct NumView {
@@ -197,61 +199,89 @@ fn wide_neg(num: NumView) -> NumView {
     return num;
 }
 
-// Mutates `out` by writing the result of multiplication of `left` and `right` to it. Operation
-// requires extra space to store intermediate results, which must be provided via `tmp`.
-// Returns the handle to `out`
-fn wide_mul(left: NumView, right: NumView, out: NumView, tmp: NumView) -> NumView {
+// Mutates `left` by writing the result of multiplication of `left` and `right` to it. Returns
+// the handle to `left`
+//
+// NOTE: Only intended to multiply positive numbers
+// NOTE: Wraps on overflow
+fn wide_mul_u32(left: NumView, right: u32) -> NumView {
+    var carry = 0u;
+    for (var idx = left.idx; idx < left.idx + word_count; idx++) {
+        let res = carrying_mul(arena[idx], right, carry);
+        arena[idx] = res.x;
+        carry = res.y;
+    }
+    return left;
+}
+
+// Mutates `out` by writing the result of squaring of `num` to it. Returns the handle to `out`
+//
+// NOTE: Overflow is UB
+fn wide_square(num: NumView, out: NumView) -> NumView {
     for (var idx = out.idx; idx < out.idx + word_count; idx++) {
         arena[idx] = 0u;
     }
 
-    let lneg = sign(wide_floor(left)) == -1;
-    let rneg = sign(wide_floor(right)) == -1;
-
-    var neg_carry = 1u;
-
-    for (var i = 0u; i < word_count; i++) {
-        var lword = arena[left.idx + i];
-        if lneg {
-            let res = carrying_add(~lword, 0u, neg_carry);
-            lword = res.x;
-            neg_carry = res.y;
-        }
-        wide_clone(right, tmp);
-        if rneg {
-            wide_neg(tmp);
-        }
-
-        var mul_carry = 0u;
-        for (var j = 0u; j < word_count; j++) {
-            let res = carrying_mul(lword, arena[tmp.idx + j], mul_carry);
-            arena[tmp.idx + j] = res.x;
-            mul_carry = res.y;
-        }
-        let shift = word_count - i - 1;
-        wide_shr_words(tmp, shift);
-        if mul_carry != 0u {
-            arena[tmp.idx + i + 1] = mul_carry;
-        }
-        wide_add(out, tmp);
+    let numneg = sign(wide_floor(num)) == -1;
+    if numneg {
+        wide_neg(num);
     }
 
-    if u32(rneg) + u32(lneg) == 1u {
-        wide_neg(out);
+    for (var i = i32(word_count) / 2 - 1; i < i32(word_count); i++) {
+        let target_idx = 2 * i + 1 - i32(word_count);
+        let ni = arena[num.idx + u32(i)];
+
+        var prod = carrying_mul(ni, ni, 0u);
+        if target_idx >= 0 {
+            let res = carrying_add(arena[out.idx + u32(target_idx)], prod.x, 0u);
+            arena[out.idx + u32(target_idx)] = res.x;
+            prod.y += res.y;
+        }
+        wide_add_u32_at(out, u32(target_idx + 1), prod.y);
+    }
+
+    for (var i = 0; i < i32(word_count); i++) {
+        // TODO: replace with max once it's added to naga
+        let min_useful_index = i32(word_count) - i - 3;
+        let start = select(i + 1, min_useful_index, i + 1 < min_useful_index);
+        for (var j = start; j < i32(word_count); j++) {
+            let target_idx = i + j + 1 - i32(word_count);
+
+            let ni = arena[num.idx + u32(i)];
+            let nj = arena[num.idx + u32(j)];
+            let prod = carrying_mul(ni, nj, 0u);
+            let double_lo = carrying_add(prod.x, prod.x, 0u);
+            var double_hi = carrying_add(prod.y, prod.y, double_lo.y);
+
+            if target_idx >= 0 {
+                let res = carrying_add(arena[out.idx + u32(target_idx)], double_lo.x, 0u);
+                arena[out.idx + u32(target_idx)] = res.x;
+                double_hi.x += res.y;
+            }
+            if target_idx >= -1 {
+                let res = carrying_add(arena[out.idx + u32(target_idx) + 1], double_hi.x, 0u);
+                arena[out.idx + u32(target_idx) + 1] = res.x;
+                double_hi.y += res.y;
+            }
+            wide_add_u32_at(out, u32(target_idx + 2), double_hi.y);
+        }
+    }
+
+    if numneg {
+        wide_neg(num);
     }
 
     return out;
 }
 
-// Mutates `num` by doubling it. Returns the handle to the mutated number
-fn wide_double(num: NumView) -> NumView {
-    var shift_carry = 0u;
-    for (var idx = num.idx; idx < num.idx + word_count; idx++) {
-        let tmp = (arena[idx] << 1u) + shift_carry;
-        shift_carry = arena[idx] >> 31u;
-        arena[idx] = tmp;
+fn wide_add_u32_at(num: NumView, offset: u32, increment: u32) {
+    var inc = increment;
+    for (var i = offset; i < word_count; i++) {
+        var sum = carrying_add(arena[num.idx + i], inc, 0u);
+        arena[num.idx + i] = sum.x;
+        inc = sum.y;
+        if inc == 0u { break; }
     }
-    return num;
 }
 
 // Mutates `num` by right shifting all its words by `shift`. Returns the handle to the mutated number
