@@ -37,6 +37,9 @@ pub struct ParamsState {
     /// Amount of iterations for this invocation
     fps_balancer: FpsBalancer,
 
+    // Window scale
+    scale: f64,
+
     update: Option<ParamsUpdate>,
     busy: bool,
 }
@@ -66,6 +69,7 @@ impl<'w> GpuContext<'w> {
         let state = ParamsState {
             depth: 0,
             fps_balancer: FpsBalancer::new(fps),
+            scale: scale,
             update: None,
             busy: false,
         };
@@ -254,7 +258,7 @@ impl<'w> GpuContext<'w> {
 
         self.apply_updates();
 
-        let dimensions = self.dimensions().scale_to(2.0);
+        let dimensions = self.dimensions().scale_to(self.state.scale);
 
         let frame = self
             .surface
@@ -361,7 +365,7 @@ impl<'w> GpuContext<'w> {
                 self.compute_bindings.write(
                     &self.queue,
                     &ComputeParams::new(
-                        self.dimensions().scale_to(2.0),
+                        self.dimensions().scale_to(self.state.scale),
                         &top_left,
                         &step,
                         self.state.fps_balancer.present_iterations,
@@ -376,6 +380,9 @@ impl<'w> GpuContext<'w> {
             }) => {
                 // Reset calculated depth
                 self.state.depth = 0;
+
+                // Save window scale
+                self.state.scale = scale;
 
                 // Reconfigure the surface
                 self.config.width = dimensions.width;
