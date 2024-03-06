@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use thiserror::Error;
 use winit::window::Window;
 
 use crate::float::WideFloat;
@@ -57,6 +58,18 @@ enum ParamsUpdate {
     },
 }
 
+#[derive(Debug, Error)]
+pub enum ContextCreationError {
+    #[error("Create surface error: {0}")]
+    SurfaceCreation(#[from] wgpu::CreateSurfaceError),
+    #[error("Surface not supported by this adapter")]
+    SurfaceUnsupported,
+    #[error("Request adapter error")]
+    AdapterRequest,
+    #[error("Request device error: {0}")]
+    DeviceRequest(#[from] wgpu::RequestDeviceError),
+}
+
 impl<'w> GpuContext<'w> {
     pub async fn new(
         window: &'w Window,
@@ -65,7 +78,7 @@ impl<'w> GpuContext<'w> {
         top_left: &PrecisePoint,
         step: &WideFloat<WORD_COUNT>,
         fps: f64,
-    ) -> Self {
+    ) -> Result<Self, ContextCreationError> {
         let state = ParamsState {
             depth: 0,
             fps_balancer: FpsBalancer::new(fps),
@@ -77,9 +90,16 @@ impl<'w> GpuContext<'w> {
         let scaled_dimensions = dimensions.scale_to(scale);
 
         // GPU handle
-        let instance = wgpu::Instance::default();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            // Should opt-out of WebGL here as it doesn't support compute shaders, but
+            // wgpu::Instance::request_adapter panics on unsupported platforms otherwise
+            backends: wgpu::Backends::all(),
+            flags: wgpu::InstanceFlags::default(),
+            dx12_shader_compiler: wgpu::Dx12Compiler::default(),
+            gles_minor_version: wgpu::Gles3MinorVersion::default(),
+        });
 
-        let surface = instance.create_surface(window).unwrap();
+        let surface = instance.create_surface(window)?;
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -88,7 +108,7 @@ impl<'w> GpuContext<'w> {
                 force_fallback_adapter: false,
             })
             .await
-            .unwrap();
+            .ok_or(ContextCreationError::AdapterRequest)?;
 
         let mut device_limits = wgpu::Limits::default().using_resolution(adapter.limits());
 
@@ -105,8 +125,7 @@ impl<'w> GpuContext<'w> {
                 },
                 None, // Trace path
             )
-            .await
-            .unwrap();
+            .await?;
 
         // Load the shaders from disk
         let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -196,11 +215,11 @@ impl<'w> GpuContext<'w> {
 
         let mut config = surface
             .get_default_config(&adapter, dimensions.width, dimensions.height)
-            .unwrap();
+            .ok_or(ContextCreationError::SurfaceUnsupported)?;
         config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&device, &config);
 
-        Self {
+        Ok(Self {
             device,
             queue,
             config,
@@ -212,7 +231,7 @@ impl<'w> GpuContext<'w> {
             render_pipeline,
             render_bindings,
             state,
-        }
+        })
     }
 
     pub fn resize_and_update_params(

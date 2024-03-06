@@ -164,7 +164,7 @@ pub async fn run() {
 
     let mut input_state = InputState::default();
 
-    let mut gpu_context = GpuContext::new(
+    let mut gpu_context = match GpuContext::new(
         &window,
         view_state.dimensions,
         view_state.window_scale,
@@ -172,7 +172,29 @@ pub async fn run() {
         &view_state.step,
         30.0,
     )
-    .await;
+    .await
+    {
+        Ok(context) => context,
+        Err(e) => {
+            log::error!("Unable to initialize a GPU context: {:?}", e);
+
+            #[cfg(target_arch = "wasm32")]
+            {
+                let root = web_sys::window()
+                    .unwrap()
+                    .document()
+                    .unwrap()
+                    .get_element_by_id("root")
+                    .unwrap();
+                root.set_inner_html(&format!(
+                    "<h3>This browser doesn't have WebGPU support yet</h3>\n<p>detailed error: {}</p>",
+                    e
+                ));
+            }
+
+            return;
+        }
+    };
 
     // Reset to default view on screen resize until any user input
     let mut view_reset = true;

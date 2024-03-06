@@ -12,6 +12,7 @@ flume = "0.11.0"
 lazy_static = "1.4.0"
 log = "0.4.20"
 pollster = "0.3.0"
+thiserror = "1.0.57"
 wgpu = "0.19.3"
 winit = "0.29.10"
 
