@@ -1,16 +1,11 @@
-use crate::{
-    float::WideFloat,
-    primitives::{PrecisePoint, ScaledDimensions},
-    WORD_COUNT,
-};
+use crate::primitives::{Coordinates, ScaledDimensions};
 
 #[derive(Debug, Clone)]
-pub struct ComputeParams<'p, 's> {
+pub struct ComputeParams<'c> {
     iteration_limit: u32,
     reset: bool,
     size: ScaledDimensions,
-    top_left: &'p PrecisePoint,
-    step: &'s WideFloat<WORD_COUNT>,
+    coords: &'c Coordinates,
 }
 
 pub struct ComputeBindings {
@@ -62,12 +57,13 @@ impl ComputeBindings {
     pub fn new(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
-        size: ScaledDimensions,
+        dimensions: ScaledDimensions,
+        word_count: usize,
     ) -> UninitializedComputeBindings {
         // Buffer to pass input parameters to the GPU
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Compute Params"),
-            size: ComputeParams::size_hint() as u64,
+            size: size_hint(word_count) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -75,7 +71,8 @@ impl ComputeBindings {
         // Buffer with the cache for iterative computation
         let intermediate_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Compute Intermediate"),
-            size: (2 * WORD_COUNT as u32 * 4 * size.aligned_width(64) * size.height) as u64,
+            size: (2 * word_count as u32 * 4 * dimensions.aligned_width(64) * dimensions.height)
+                as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -83,7 +80,7 @@ impl ComputeBindings {
         // Buffer with result produced by the GPU
         let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Compute Result"),
-            size: (4 * size.aligned_width(64) * size.height) as u64,
+            size: (4 * dimensions.aligned_width(64) * dimensions.height) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -137,35 +134,29 @@ impl UninitializedComputeBindings {
     }
 }
 
-impl<'p, 's> ComputeParams<'p, 's> {
-    pub fn new(
-        size: ScaledDimensions,
-        top_left: &'p PrecisePoint,
-        step: &'s WideFloat<WORD_COUNT>,
-        iteration_limit: u32,
-    ) -> Self {
+impl<'c> ComputeParams<'c> {
+    pub fn new(size: ScaledDimensions, coords: &'c Coordinates, iteration_limit: u32) -> Self {
         Self {
             size,
-            top_left,
-            step,
+            coords,
             iteration_limit,
             reset: true,
         }
     }
 
     fn encode(&self) -> Vec<u8> {
-        let mut buffer = Vec::with_capacity(Self::size_hint() as usize);
+        let mut buffer = Vec::with_capacity(size_hint(self.coords.size()) as usize);
         buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.iteration_limit));
         buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.reset as u32));
         buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.size.aligned_width(64)));
         buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.size.height));
-        buffer.extend_from_slice(bytemuck::cast_slice(&self.top_left.x.0));
-        buffer.extend_from_slice(bytemuck::cast_slice(&self.top_left.y.0));
-        buffer.extend_from_slice(bytemuck::cast_slice(&self.step.0));
+        buffer.extend_from_slice(&self.coords.x.as_bytes());
+        buffer.extend_from_slice(&self.coords.y.as_bytes());
+        buffer.extend_from_slice(&self.coords.step.as_bytes());
         buffer
     }
+}
 
-    const fn size_hint() -> u32 {
-        WORD_COUNT as u32 * 12 + 16
-    }
+fn size_hint(word_count: usize) -> u32 {
+    word_count as u32 * 12 + 16
 }

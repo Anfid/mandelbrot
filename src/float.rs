@@ -1,19 +1,10 @@
-use std::{
-    convert::TryFrom,
-    ops::{Add, AddAssign, Mul, MulAssign, Neg, ShlAssign, ShrAssign, Sub, SubAssign},
-};
+use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, ShlAssign, ShrAssign, Sub, SubAssign};
 
 const WORD_WIDTH: usize = 32;
 
 /// Wide float specialized for use in Mandelbrot calculations.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct WideFloat<const N: usize>(pub(crate) [u32; N]);
-
-impl<const N: usize> Default for WideFloat<N> {
-    fn default() -> Self {
-        Self([0; N])
-    }
-}
+pub struct WideFloat(Vec<u32>);
 
 fn isolate_mantissa(f: f32) -> u32 {
     f.to_bits() & 0x7f_ffff
@@ -29,10 +20,24 @@ pub enum FromFloatError {
     OutOfRange,
 }
 
-impl<const N: usize> TryFrom<f32> for WideFloat<N> {
-    type Error = FromFloatError;
+impl WideFloat {
+    pub fn zero(size: usize) -> Self {
+        Self(vec![0; size])
+    }
 
-    fn try_from(value: f32) -> Result<Self, Self::Error> {
+    pub fn min_positive(size: usize) -> Self {
+        let mut buffer = vec![0; size];
+        buffer[0] = 1;
+        Self(buffer)
+    }
+
+    pub fn from_i32(value: i32, size: usize) -> Self {
+        let mut buffer = vec![0; size];
+        buffer[size - 1] = u32::from_ne_bytes(i32::to_ne_bytes(value));
+        Self(buffer)
+    }
+
+    pub fn from_f32(value: f32, size: usize) -> Result<Self, FromFloatError> {
         let (neg, value) = if value < 0.0 {
             (true, -value)
         } else {
@@ -41,7 +46,7 @@ impl<const N: usize> TryFrom<f32> for WideFloat<N> {
         let e = isolate_exponent(value);
         // Note: This rounds subnormal numbers to zero
         if e == 0 {
-            return Ok(WideFloat::default());
+            return Ok(WideFloat::zero(size));
         }
         let v = isolate_mantissa(value) << (WORD_WIDTH as u32 - f32::MANTISSA_DIGITS)
             | 1 << (WORD_WIDTH - 1);
@@ -56,7 +61,7 @@ impl<const N: usize> TryFrom<f32> for WideFloat<N> {
             0
         };
 
-        let mut buffer = [0; N];
+        let mut buffer = vec![0; size];
 
         if let Some(v) = buffer.get_mut(offset) {
             *v = left;
@@ -74,26 +79,10 @@ impl<const N: usize> TryFrom<f32> for WideFloat<N> {
             Ok(Self(buffer))
         }
     }
-}
-
-impl<const N: usize> From<i32> for WideFloat<N> {
-    fn from(value: i32) -> Self {
-        let mut buffer = [0; N];
-        buffer[N - 1] = u32::from_ne_bytes(i32::to_ne_bytes(value));
-        Self(buffer)
-    }
-}
-
-impl<const N: usize> WideFloat<N> {
-    pub const fn min_positive() -> Self {
-        let mut buffer = [0; N];
-        buffer[0] = 1;
-        Self(buffer)
-    }
 
     // TODO: bring back f64 conversions
     pub fn as_f32_round(&self) -> f32 {
-        if self.0.into_iter().all(|w| w == 0) {
+        if self.0.iter().all(|w| *w == 0) {
             return 0.0;
         }
         let neg = self < &0;
@@ -101,7 +90,7 @@ impl<const N: usize> WideFloat<N> {
         let mut first_word = 0;
         let mut second_word = 0;
         let mut carry = true;
-        for mut word in self.0.into_iter() {
+        for mut word in self.0.iter().copied() {
             if neg {
                 (word, carry) = (!word).overflowing_add(carry as u32);
             }
@@ -133,21 +122,50 @@ impl<const N: usize> WideFloat<N> {
     }
 
     pub fn floor(&self) -> i32 {
-        i32::from_ne_bytes(self.0[N - 1].to_ne_bytes())
+        i32::from_ne_bytes(self.0.last().unwrap().to_ne_bytes())
     }
 
     pub fn is_int(&self) -> bool {
-        self.0.into_iter().take(N - 1).all(|p| p == 0)
+        self.0.iter().take(self.0.len() - 1).all(|p| *p == 0)
+    }
+
+    pub fn word_count(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns true if the least significant word of a positive number is less than or equal to `threshold` and the
+    /// remaining words are zero
+    pub fn requires_precision(&self, threshold: u32) -> bool {
+        self.0[0] <= threshold && self.0.iter().skip(1).all(|p| *p == 0)
+    }
+
+    /// Returns true if the second least significant word of a positive number is greater than or equal to `threshold`
+    pub fn excess_precision(&self, threshold: u32) -> bool {
+        self.0[1] >= threshold
+    }
+
+    /// Increases the word count of this number by adding a zeroed least significant word
+    pub fn increase_precision(&mut self) {
+        self.0.insert(0, 0);
+    }
+
+    /// Decreases the word count of this number by removing the least significant word
+    pub fn decrease_precision(&mut self) {
+        self.0.remove(0);
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        bytemuck::cast_slice(&self.0)
     }
 }
 
-impl<const N: usize> PartialEq<i32> for WideFloat<N> {
+impl PartialEq<i32> for WideFloat {
     fn eq(&self, other: &i32) -> bool {
         self.floor() == *other && self.is_int()
     }
 }
 
-impl<const N: usize> PartialOrd<i32> for WideFloat<N> {
+impl PartialOrd<i32> for WideFloat {
     fn partial_cmp(&self, other: &i32) -> Option<std::cmp::Ordering> {
         let ord = self.floor().cmp(other);
         if ord.is_eq() && !self.is_int() {
@@ -158,59 +176,71 @@ impl<const N: usize> PartialOrd<i32> for WideFloat<N> {
     }
 }
 
-impl<const N: usize> Add<&Self> for WideFloat<N> {
-    type Output = WideFloat<N>;
+impl Add<&Self> for WideFloat {
+    type Output = WideFloat;
 
     fn add(mut self, rhs: &Self) -> Self::Output {
+        assert_eq!(self.0.len(), rhs.0.len());
+
         let mut carry = false;
-        for (lhs_part, rhs_part) in self.0.iter_mut().zip(rhs.0) {
-            (*lhs_part, carry) = lhs_part.carrying_add(rhs_part, carry);
+        for (lhs_part, rhs_part) in self.0.iter_mut().zip(&rhs.0) {
+            (*lhs_part, carry) = lhs_part.carrying_add(*rhs_part, carry);
         }
         self
     }
 }
 
-impl<const N: usize> AddAssign<&Self> for WideFloat<N> {
+impl AddAssign<&Self> for WideFloat {
     fn add_assign(&mut self, rhs: &Self) {
+        assert_eq!(self.0.len(), rhs.0.len());
+
         let mut carry = false;
-        for (lhs_part, rhs_part) in self.0.iter_mut().zip(rhs.0) {
-            (*lhs_part, carry) = lhs_part.carrying_add(rhs_part, carry);
+        for (lhs_part, rhs_part) in self.0.iter_mut().zip(&rhs.0) {
+            (*lhs_part, carry) = lhs_part.carrying_add(*rhs_part, carry);
         }
     }
 }
 
-impl<const N: usize> Sub<&Self> for WideFloat<N> {
+impl Sub<&Self> for WideFloat {
     type Output = Self;
 
     fn sub(mut self, rhs: &Self) -> Self {
+        assert_eq!(self.0.len(), rhs.0.len());
+
         let mut borrow = false;
-        for (lhs_part, rhs_part) in self.0.iter_mut().zip(rhs.0) {
-            (*lhs_part, borrow) = lhs_part.borrowing_sub(rhs_part, borrow);
+        for (lhs_part, rhs_part) in self.0.iter_mut().zip(&rhs.0) {
+            (*lhs_part, borrow) = lhs_part.borrowing_sub(*rhs_part, borrow);
         }
         self
     }
 }
 
-impl<const N: usize> SubAssign<&Self> for WideFloat<N> {
+impl SubAssign<&Self> for WideFloat {
     fn sub_assign(&mut self, rhs: &Self) {
+        assert_eq!(self.0.len(), rhs.0.len());
+
         let mut borrow = false;
-        for (lhs_part, rhs_part) in self.0.iter_mut().zip(rhs.0) {
-            (*lhs_part, borrow) = lhs_part.borrowing_sub(rhs_part, borrow);
+        for (lhs_part, rhs_part) in self.0.iter_mut().zip(&rhs.0) {
+            (*lhs_part, borrow) = lhs_part.borrowing_sub(*rhs_part, borrow);
         }
     }
 }
 
-impl<const N: usize> Mul for &WideFloat<N> {
-    type Output = WideFloat<N>;
+impl Mul for &WideFloat {
+    type Output = WideFloat;
 
     fn mul(self, rhs: Self) -> Self::Output {
+        let len = self.0.len();
+        assert_eq!(len, rhs.0.len());
+
         let lneg = self.floor() < 0;
         let rneg = rhs.floor() < 0;
-        let mut result = WideFloat::default();
+        let mut result = WideFloat::zero(len);
         let mut carry = true;
         for (l_idx, l_word) in self
             .0
-            .into_iter()
+            .iter()
+            .copied()
             .map(|w| {
                 if lneg {
                     let neg_w;
@@ -230,7 +260,7 @@ impl<const N: usize> Mul for &WideFloat<N> {
             for r_word in part.0.iter_mut() {
                 (*r_word, carry) = l_word.carrying_mul(*r_word, carry);
             }
-            let shift = N - l_idx - 1;
+            let shift = len - l_idx - 1;
             part >>= shift * WORD_WIDTH;
             if carry != 0 {
                 part.0[l_idx + 1] = carry;
@@ -244,22 +274,24 @@ impl<const N: usize> Mul for &WideFloat<N> {
     }
 }
 
-impl<const N: usize> MulAssign<&WideFloat<N>> for WideFloat<N> {
+impl MulAssign<&WideFloat> for WideFloat {
     fn mul_assign(&mut self, rhs: &Self) {
         *self = &*self * rhs;
     }
 }
 
-impl<const N: usize> ShrAssign<usize> for WideFloat<N> {
+impl ShrAssign<usize> for WideFloat {
     fn shr_assign(&mut self, rhs: usize) {
+        let len = self.0.len();
+
         let rotate = rhs / WORD_WIDTH;
         self.0.copy_within(rotate.., 0);
-        self.0.iter_mut().skip(N - rotate).for_each(|w| *w = 0);
+        self.0.iter_mut().skip(len - rotate).for_each(|w| *w = 0);
 
         let shift = rhs % WORD_WIDTH;
         if shift != 0 {
             let mut carry = 0;
-            for w in self.0.iter_mut().rev().take(N - rotate) {
+            for w in self.0.iter_mut().rev().take(len - rotate) {
                 let tmp = (*w >> shift) + carry;
                 carry = *w << (WORD_WIDTH - shift);
                 *w = tmp;
@@ -268,16 +300,18 @@ impl<const N: usize> ShrAssign<usize> for WideFloat<N> {
     }
 }
 
-impl<const N: usize> ShlAssign<usize> for WideFloat<N> {
+impl ShlAssign<usize> for WideFloat {
     fn shl_assign(&mut self, rhs: usize) {
+        let len = self.0.len();
+
         let rotate = rhs / WORD_WIDTH;
-        self.0.copy_within(..N - rotate, rotate);
+        self.0.copy_within(..len - rotate, rotate);
         self.0.iter_mut().take(rotate).for_each(|w| *w = 0);
 
         let shift = rhs % WORD_WIDTH;
         if shift != 0 {
             let mut carry = 0;
-            for w in self.0.iter_mut().take(N - rotate) {
+            for w in self.0.iter_mut().take(len - rotate) {
                 let tmp = (*w << shift) + carry;
                 carry = *w >> (WORD_WIDTH - shift);
                 *w = tmp;
@@ -286,7 +320,7 @@ impl<const N: usize> ShlAssign<usize> for WideFloat<N> {
     }
 }
 
-impl<const N: usize> Neg for WideFloat<N> {
+impl Neg for WideFloat {
     type Output = Self;
 
     fn neg(mut self) -> Self::Output {
@@ -298,22 +332,24 @@ impl<const N: usize> Neg for WideFloat<N> {
     }
 }
 
-impl<const N: usize> PartialOrd for WideFloat<N> {
+impl PartialOrd for WideFloat {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<const N: usize> Ord for WideFloat<N> {
+impl Ord for WideFloat {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        assert_eq!(self.0.len(), other.0.len());
+
         let whole_cmp = self.floor().cmp(&other.floor());
         if whole_cmp != std::cmp::Ordering::Equal {
             return whole_cmp;
         }
         self.0
-            .into_iter()
+            .iter()
             .rev()
             .skip(1)
-            .cmp(other.0.into_iter().rev().skip(1))
+            .cmp(other.0.iter().rev().skip(1))
     }
 }

@@ -2,16 +2,17 @@ use std::borrow::Cow;
 use thiserror::Error;
 use winit::window::Window;
 
-use crate::float::WideFloat;
 use crate::fps_balancer::FpsBalancer;
-use crate::primitives::{Dimensions, PrecisePoint};
-use crate::{MAX_DEPTH, WORD_COUNT};
+use crate::primitives::{Coordinates, Dimensions, ScaledDimensions};
+use crate::MAX_DEPTH;
 
 mod compute;
 mod render;
 
 use self::compute::{ComputeBindings, ComputeParams};
 use self::render::{FragmentParams, RenderBindings};
+
+const COMPUTE_SHADER_TEMPLATE: &str = include_str!("compute.wgsl");
 
 pub struct GpuContext<'w> {
     device: wgpu::Device,
@@ -38,8 +39,12 @@ pub struct ParamsState {
     /// Amount of iterations for this invocation
     fps_balancer: FpsBalancer,
 
-    // Window scale
+    /// Window scale
     scale: f64,
+
+    /// The amount of words in each number in comupte shader
+    word_count: usize,
+    scaled_dimensions: ScaledDimensions,
 
     update: Option<ParamsUpdate>,
     busy: bool,
@@ -47,14 +52,12 @@ pub struct ParamsState {
 
 enum ParamsUpdate {
     Move {
-        top_left: PrecisePoint,
-        step: WideFloat<WORD_COUNT>,
+        coords: Coordinates,
     },
     Resize {
         dimensions: Dimensions,
         scale: f64,
-        top_left: PrecisePoint,
-        step: WideFloat<WORD_COUNT>,
+        coords: Coordinates,
     },
 }
 
@@ -75,19 +78,20 @@ impl<'w> GpuContext<'w> {
         window: &'w Window,
         dimensions: Dimensions,
         scale: f64,
-        top_left: &PrecisePoint,
-        step: &WideFloat<WORD_COUNT>,
+        coords: &Coordinates,
         fps: f64,
     ) -> Result<Self, ContextCreationError> {
+        let scaled_dimensions = dimensions.scale_to(scale);
+
         let state = ParamsState {
             depth: 0,
             fps_balancer: FpsBalancer::new(fps),
             scale: scale,
+            word_count: coords.size(),
+            scaled_dimensions,
             update: None,
             busy: false,
         };
-
-        let scaled_dimensions = dimensions.scale_to(scale);
 
         // GPU handle
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -127,10 +131,14 @@ impl<'w> GpuContext<'w> {
             )
             .await?;
 
-        // Load the shaders from disk
+        let compute_shader_src = COMPUTE_SHADER_TEMPLATE.replace(
+            "const word_count: u32 = 8;",
+            &format!("const word_count: u32 = {};", state.word_count),
+        );
+
         let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("compute.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(Cow::Owned(compute_shader_src)),
         });
         let render_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
@@ -140,16 +148,20 @@ impl<'w> GpuContext<'w> {
         let compute_bind_group_layout =
             device.create_bind_group_layout(&ComputeBindings::bind_group_layout_desc());
 
-        let compute_bindings =
-            ComputeBindings::new(&device, &compute_bind_group_layout, scaled_dimensions).write(
-                &queue,
-                &ComputeParams::new(
-                    scaled_dimensions,
-                    top_left,
-                    step,
-                    state.fps_balancer.present_iterations,
-                ),
-            );
+        let compute_bindings = ComputeBindings::new(
+            &device,
+            &compute_bind_group_layout,
+            scaled_dimensions,
+            coords.size(),
+        )
+        .write(
+            &queue,
+            &ComputeParams::new(
+                scaled_dimensions,
+                coords,
+                state.fps_balancer.present_iterations,
+            ),
+        );
 
         let compute_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -238,29 +250,21 @@ impl<'w> GpuContext<'w> {
         &mut self,
         dimensions: Dimensions,
         scale: f64,
-        top_left: PrecisePoint,
-        step: WideFloat<WORD_COUNT>,
+        coords: Coordinates,
     ) {
         self.state.update = Some(ParamsUpdate::Resize {
             dimensions,
             scale,
-            top_left,
-            step,
+            coords,
         });
     }
 
-    pub fn update_params(&mut self, new_top_left: PrecisePoint, new_step: WideFloat<WORD_COUNT>) {
+    pub fn update_params(&mut self, new_coords: Coordinates) {
         match &mut self.state.update {
-            Some(ParamsUpdate::Resize { top_left, step, .. }) => {
-                *top_left = new_top_left;
-                *step = new_step;
+            Some(ParamsUpdate::Resize { coords, .. }) => {
+                *coords = new_coords;
             }
-            update => {
-                *update = Some(ParamsUpdate::Move {
-                    top_left: new_top_left,
-                    step: new_step,
-                })
-            }
+            update => *update = Some(ParamsUpdate::Move { coords: new_coords }),
         }
     }
 
@@ -377,25 +381,70 @@ impl<'w> GpuContext<'w> {
 
     fn apply_updates(&mut self) {
         match self.state.update.take() {
-            Some(ParamsUpdate::Move { top_left, step }) => {
+            Some(ParamsUpdate::Move { coords }) => {
                 // Reset calculated depth
                 self.state.depth = 0;
 
-                self.compute_bindings.write(
-                    &self.queue,
-                    &ComputeParams::new(
-                        self.dimensions().scale_to(self.state.scale),
-                        &top_left,
-                        &step,
-                        self.state.fps_balancer.present_iterations,
-                    ),
-                );
+                // NOTE: Not extracted into a dedicated function since it's a temporary solution while override
+                // variables are not supported in wgpu
+                if coords.size() != self.state.word_count {
+                    log::info!("Changing number word count to {}", coords.size());
+                    self.state.word_count = coords.size();
+                    let compute_shader_src = COMPUTE_SHADER_TEMPLATE.replace(
+                        "const word_count: u32 = 8;",
+                        &format!("const word_count: u32 = {};", self.state.word_count),
+                    );
+                    let compute_shader =
+                        self.device
+                            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                                label: None,
+                                source: wgpu::ShaderSource::Wgsl(Cow::Owned(compute_shader_src)),
+                            });
+                    self.compute_pipeline =
+                        self.device
+                            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                                label: Some("Compute Pipeline"),
+                                layout: Some(&self.device.create_pipeline_layout(
+                                    &wgpu::PipelineLayoutDescriptor {
+                                        label: Some("Compute PipelineLayout"),
+                                        bind_group_layouts: &[&self.compute_bind_group_layout],
+                                        push_constant_ranges: &[],
+                                    },
+                                )),
+                                module: &compute_shader,
+                                entry_point: "main",
+                            });
+
+                    // Resize compute shader bindings
+                    self.compute_bindings = ComputeBindings::new(
+                        &self.device,
+                        &self.compute_bind_group_layout,
+                        self.state.scaled_dimensions,
+                        coords.size(),
+                    )
+                    .write(
+                        &self.queue,
+                        &ComputeParams::new(
+                            self.state.scaled_dimensions,
+                            &coords,
+                            self.state.fps_balancer.present_iterations,
+                        ),
+                    );
+                } else {
+                    self.compute_bindings.write(
+                        &self.queue,
+                        &ComputeParams::new(
+                            self.dimensions().scale_to(self.state.scale),
+                            &coords,
+                            self.state.fps_balancer.present_iterations,
+                        ),
+                    );
+                }
             }
             Some(ParamsUpdate::Resize {
                 dimensions,
                 scale,
-                top_left,
-                step,
+                coords,
             }) => {
                 // Reset calculated depth
                 self.state.depth = 0;
@@ -409,19 +458,51 @@ impl<'w> GpuContext<'w> {
                 self.surface.configure(&self.device, &self.config);
 
                 let scaled_dimensions = dimensions.scale_to(scale);
+                self.state.scaled_dimensions = scaled_dimensions;
+
+                // NOTE: Not extracted into a dedicated function since it's a temporary solution while override
+                // variables are not supported in wgpu
+                if coords.size() != self.state.word_count {
+                    log::info!("Changing number word count to {}", coords.size());
+                    self.state.word_count = coords.size();
+                    let compute_shader_src = COMPUTE_SHADER_TEMPLATE.replace(
+                        "const word_count: u32 = 8;",
+                        &format!("const word_count: u32 = {};", self.state.word_count),
+                    );
+                    let compute_shader =
+                        self.device
+                            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                                label: None,
+                                source: wgpu::ShaderSource::Wgsl(Cow::Owned(compute_shader_src)),
+                            });
+                    self.compute_pipeline =
+                        self.device
+                            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                                label: Some("Compute Pipeline"),
+                                layout: Some(&self.device.create_pipeline_layout(
+                                    &wgpu::PipelineLayoutDescriptor {
+                                        label: Some("Compute PipelineLayout"),
+                                        bind_group_layouts: &[&self.compute_bind_group_layout],
+                                        push_constant_ranges: &[],
+                                    },
+                                )),
+                                module: &compute_shader,
+                                entry_point: "main",
+                            });
+                }
 
                 // Resize compute shader bindings
                 self.compute_bindings = ComputeBindings::new(
                     &self.device,
                     &self.compute_bind_group_layout,
                     scaled_dimensions,
+                    coords.size(),
                 )
                 .write(
                     &self.queue,
                     &ComputeParams::new(
                         scaled_dimensions,
-                        &top_left,
-                        &step,
+                        &coords,
                         self.state.fps_balancer.present_iterations,
                     ),
                 );
