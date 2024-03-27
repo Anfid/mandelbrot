@@ -1,3 +1,5 @@
+use iced_wgpu::core as iced_core;
+use iced_winit::runtime as iced_runtime;
 use std::borrow::Cow;
 use thiserror::Error;
 use winit::window::Window;
@@ -21,6 +23,10 @@ pub struct GpuContext<'w> {
     config: wgpu::SurfaceConfiguration,
     surface: wgpu::Surface<'w>,
 
+    pub ui_renderer: iced_wgpu::Renderer,
+    pub ui_debug: iced_runtime::Debug,
+    viewport: iced_wgpu::graphics::Viewport,
+
     compute_bind_group_layout: wgpu::BindGroupLayout,
     compute_pipeline: wgpu::ComputePipeline,
     compute_bindings: ComputeBindings,
@@ -39,11 +45,12 @@ pub struct ParamsState {
     /// Amount of iterations for this invocation
     fps_balancer: FpsBalancer,
 
-    /// Window scale
+    /// View scale factor
     scale: f64,
 
     /// The amount of words in each number in comupte shader
     word_count: usize,
+    /// View dimensions, scaled by view_scale
     scaled_dimensions: ScaledDimensions,
 
     update: Option<ParamsUpdate>,
@@ -83,10 +90,15 @@ impl<'w> GpuContext<'w> {
     ) -> Result<Self, ContextCreationError> {
         let scaled_dimensions = dimensions.scale_to(scale);
 
+        let viewport = iced_wgpu::graphics::Viewport::with_physical_size(
+            iced_core::Size::new(dimensions.width, dimensions.height),
+            scale,
+        );
+
         let state = ParamsState {
             depth: 0,
             fps_balancer: FpsBalancer::new(fps),
-            scale: scale,
+            scale,
             word_count: coords.size(),
             scaled_dimensions,
             update: None,
@@ -231,11 +243,26 @@ impl<'w> GpuContext<'w> {
         config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&device, &config);
 
+        let ui_renderer = iced_wgpu::Renderer::new(
+            iced_wgpu::Backend::new(
+                &device,
+                &queue,
+                iced_wgpu::Settings::default(),
+                swapchain_format,
+            ),
+            iced::Font::default(),
+            iced::Pixels(16.0),
+        );
+        let ui_debug = iced_runtime::Debug::new();
+
         Ok(Self {
             device,
             queue,
             config,
             surface,
+            ui_renderer,
+            ui_debug,
+            viewport,
             compute_bind_group_layout,
             compute_pipeline,
             compute_bindings,
@@ -246,12 +273,23 @@ impl<'w> GpuContext<'w> {
         })
     }
 
+    pub fn rescale_ui(&mut self, window_scale: f64) {
+        self.viewport = iced_wgpu::graphics::Viewport::with_physical_size(
+            self.viewport.physical_size(),
+            window_scale,
+        );
+    }
+
     pub fn resize_and_update_params(
         &mut self,
         dimensions: Dimensions,
         scale: f64,
         coords: Coordinates,
     ) {
+        self.viewport = iced_wgpu::graphics::Viewport::with_physical_size(
+            iced_core::Size::new(dimensions.width, dimensions.height),
+            self.viewport.scale_factor(),
+        );
         self.state.update = Some(ParamsUpdate::Resize {
             dimensions,
             scale,
@@ -356,6 +394,21 @@ impl<'w> GpuContext<'w> {
         }
         command_encoder.pop_debug_group();
 
+        // Render iced UI on top
+        self.ui_renderer.with_primitives(|backend, primitive| {
+            backend.present(
+                &self.device,
+                &self.queue,
+                &mut command_encoder,
+                None,
+                frame.texture.format(),
+                &view,
+                primitive,
+                &self.viewport,
+                &self.ui_debug.overlay(),
+            );
+        });
+
         // submit will accept anything that implements IntoIter
         self.queue.submit(Some(command_encoder.finish()));
         frame.present();
@@ -377,6 +430,10 @@ impl<'w> GpuContext<'w> {
             width: self.config.width,
             height: self.config.height,
         }
+    }
+
+    pub fn viewport(&self) -> &iced_wgpu::graphics::Viewport {
+        &self.viewport
     }
 
     fn apply_updates(&mut self) {
