@@ -50,7 +50,7 @@ impl ViewState {
             mul,
             (anchor.x / self.scale_factor as f32).round() as i32,
             (anchor.y / self.scale_factor as f32).round() as i32,
-            2.0 * 4.0 / self.dimensions.shortest_side() as f32 / self.scale_factor as f32,
+            2.0 * 4.0 / self.dimensions.shortest_side() as f32 * self.scale_factor as f32,
         );
 
         log::info!(
