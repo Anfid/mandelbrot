@@ -1,4 +1,4 @@
-use iced::Theme;
+use iced::{Color, Theme};
 use iced_wgpu::Renderer;
 use iced_widget::{button, column, container, mouse_area, scrollable, slider, text};
 use iced_winit::core::alignment;
@@ -82,7 +82,23 @@ impl Program for Controls {
         mouse_area(
             container(interface)
                 .width(Length::Shrink)
-                .style(iced::theme::Container::Box),
+                .style(iced::theme::Container::from(|theme: &iced::Theme| {
+                    iced_widget::container::Appearance {
+                        background: Some(
+                            iced::Color {
+                                a: 0.6,
+                                ..theme.palette().background
+                            }
+                            .into(),
+                        ),
+                        shadow: iced::Shadow {
+                            color: Color::BLACK,
+                            offset: Default::default(),
+                            blur_radius: 10.0,
+                        },
+                        ..Default::default()
+                    }
+                })),
         )
         .on_enter(Message::CapturePointer(true))
         .on_exit(Message::CapturePointer(false))
