@@ -12,10 +12,10 @@ use winit::{
     window::WindowBuilder,
 };
 
-mod controls;
 mod float;
 mod fps_balancer;
 mod gpu;
+mod overlay;
 mod primitives;
 mod timer;
 mod view_state;
@@ -120,7 +120,7 @@ pub async fn run() {
         }
     };
 
-    let controls = controls::Controls::new(event_loop_proxy.clone(), window_scale_factor);
+    let controls = overlay::Overlay::new(event_loop_proxy.clone(), window_scale_factor);
     let mut clipboard = iced_winit::Clipboard::unconnected();
     let mut ui_state = iced_runtime::program::State::new(
         controls,

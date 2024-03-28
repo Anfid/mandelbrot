@@ -10,25 +10,26 @@ use crate::UserEvent;
 
 /// Iced Program responsible for control panel UI
 #[derive(Debug)]
-pub struct Controls {
+pub struct Overlay {
     /// Main event loop proxy to send events
     event_loop_proxy: EventLoopProxy<UserEvent>,
     /// Determines if control panel is displayed or hidden
     settings_open: bool,
-    /// Fractal view scale factor
-    scale_factor: f64,
+    /// Square root of fractal view scale factor. Square to get an actual scale factor value.
+    /// Stored as sqrt to allow exponential scaling in the linear slider
+    scale_factor_sqrt: f64,
     /// Indicates if pointer is interacting with control panel UI
     pointer_captured: bool,
 }
 
-impl Controls {
+impl Overlay {
     /// Creates a new cotrol panel instance
-    pub fn new(event_loop_proxy: EventLoopProxy<UserEvent>, scale_factor: f64) -> Controls {
-        Controls {
+    pub fn new(event_loop_proxy: EventLoopProxy<UserEvent>, scale_factor: f64) -> Overlay {
+        Overlay {
             event_loop_proxy,
             settings_open: false,
             pointer_captured: false,
-            scale_factor,
+            scale_factor_sqrt: scale_factor.sqrt(),
         }
     }
 
@@ -45,7 +46,7 @@ pub enum Message {
     ScaleChanged(f64),
 }
 
-impl Program for Controls {
+impl Program for Overlay {
     type Theme = Theme;
     type Message = Message;
     type Renderer = Renderer;
@@ -59,9 +60,11 @@ impl Program for Controls {
                 self.pointer_captured = status;
             }
             Message::ScaleChanged(scale) => {
-                self.scale_factor = scale;
+                self.scale_factor_sqrt = scale;
                 self.event_loop_proxy
-                    .send_event(UserEvent::ViewScaleFactorChanged(self.scale_factor))
+                    .send_event(UserEvent::ViewScaleFactorChanged(
+                        self.scale_factor_sqrt * self.scale_factor_sqrt,
+                    ))
                     .expect("Event loop closed")
             }
         }
@@ -106,16 +109,18 @@ impl Program for Controls {
     }
 }
 
-impl Controls {
+impl Overlay {
     fn settings_view(&self) -> Element<Message, Theme, Renderer> {
         let content = container(
             column![
-                text(format!("Scale: {:.2}", self.scale_factor)),
-                slider(
-                    1.0..=10.0,
-                    self.scale_factor,
-                    |scale| Message::ScaleChanged(scale)
-                )
+                text(format!(
+                    "Scale: {:.2}",
+                    self.scale_factor_sqrt * self.scale_factor_sqrt
+                )),
+                slider(1.0..=30.0_f64.sqrt(), self.scale_factor_sqrt, |scale| {
+                    Message::ScaleChanged(scale)
+                })
+                .step(0.01)
             ]
             .spacing(10),
         )
