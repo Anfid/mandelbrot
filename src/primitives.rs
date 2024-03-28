@@ -23,6 +23,10 @@ impl Dimensions {
             height: (self.height as f64 / scale).round() as u32,
         }
     }
+
+    pub fn shortest_side(&self) -> u32 {
+        self.width.min(self.height)
+    }
 }
 
 #[repr(C)]
@@ -35,10 +39,6 @@ pub struct ScaledDimensions {
 impl ScaledDimensions {
     pub fn aligned_width(&self, alignment: u32) -> u32 {
         self.width.div_ceil(alignment) * alignment
-    }
-
-    pub fn shortest_side(&self) -> u32 {
-        self.width.min(self.height)
     }
 }
 
@@ -64,7 +64,7 @@ impl Coordinates {
             &(&WideFloat::from_f32(dy, self.size()).expect("Invalid move delta") * &self.step);
     }
 
-    pub fn rescale_to_point(&mut self, mul: f32, x: i32, y: i32, max_limit: f32) {
+    pub fn zoom_with_anchor(&mut self, mul: f32, x: i32, y: i32, max_limit: f32) {
         if mul < 1.0 && self.step.requires_precision(1000) {
             self.increase_precision();
         } else if mul > 1.0 && self.step.excess_precision(1000) {

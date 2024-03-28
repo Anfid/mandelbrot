@@ -18,71 +18,13 @@ mod fps_balancer;
 mod gpu;
 mod primitives;
 mod timer;
+mod view_state;
 
 use crate::gpu::GpuContext;
-use crate::primitives::{Coordinates, Dimensions, Point};
+use crate::primitives::{Dimensions, Point};
+use crate::view_state::ViewState;
 
 const MAX_DEPTH: u32 = u32::MAX;
-
-#[derive(Debug, Clone)]
-struct ViewState {
-    dimensions: Dimensions,
-    scale_factor: f64,
-    coords: Coordinates,
-}
-
-impl ViewState {
-    fn default(dimensions: Dimensions, scale_factor: f64) -> Self {
-        let scaled_dimensions = dimensions.scale_to(scale_factor);
-        let step = 4.0 / scaled_dimensions.shortest_side() as f32;
-        let x = -(scaled_dimensions.width as f32 / 2.0) * step;
-        let y = -(scaled_dimensions.height as f32 / 2.0) * step;
-        Self {
-            dimensions,
-            scale_factor,
-            coords: Coordinates::new(x, y, step),
-        }
-    }
-
-    pub fn rescale_to_point(&mut self, delta: f32, point: Option<Point>) {
-        let scaled_dimensions = self.dimensions.scale_to(self.scale_factor);
-        let point = point.unwrap_or(Point {
-            x: (self.dimensions.width / 2) as f32,
-            y: (self.dimensions.height / 2) as f32,
-        });
-
-        let mul = if delta > 0.0 {
-            1.0 / (1.0 + delta)
-        } else {
-            1.0 - delta
-        };
-
-        self.coords.rescale_to_point(
-            mul,
-            (point.x / self.scale_factor as f32).round() as i32,
-            (point.y / self.scale_factor as f32).round() as i32,
-            2.0 * 4.0 / scaled_dimensions.shortest_side() as f32,
-        );
-
-        log::info!(
-            "x: {}, y: {}, scale: {}",
-            self.coords.x.as_f32_round(),
-            self.coords.y.as_f32_round(),
-            self.coords.step.as_f32_round(),
-        );
-    }
-
-    fn move_by_screen_delta(&mut self, dx: f32, dy: f32) {
-        self.coords
-            .move_by_delta(dx / self.scale_factor as f32, dy / self.scale_factor as f32);
-
-        log::info!(
-            "x: {}, y: {}",
-            self.coords.x.as_f32_round(),
-            self.coords.y.as_f32_round(),
-        );
-    }
-}
 
 #[derive(Debug, Default)]
 struct InputState {
@@ -150,8 +92,8 @@ pub async fn run() {
     let mut gpu_context = match GpuContext::new(
         &window,
         view_state.dimensions,
-        view_state.scale_factor,
-        &view_state.coords,
+        view_state.scale_factor(),
+        view_state.coords(),
         30.0,
     )
     .await
@@ -214,14 +156,14 @@ pub async fn run() {
                                 Dimensions::new_nonzero(new_size.width, new_size.height);
                             if view_reset {
                                 view_state =
-                                    ViewState::default(dimensions, view_state.scale_factor);
+                                    ViewState::default(dimensions, view_state.scale_factor());
                             } else {
                                 view_state.dimensions = dimensions;
                             }
                             gpu_context.resize_and_update_params(
                                 dimensions,
-                                view_state.scale_factor,
-                                view_state.coords.clone(),
+                                view_state.scale_factor(),
+                                view_state.coords().clone(),
                             );
 
                             window.request_redraw();
@@ -233,8 +175,8 @@ pub async fn run() {
                         }
                         WindowEvent::TouchpadMagnify { delta, .. } => {
                             view_reset = false;
-                            view_state.rescale_to_point(*delta as f32, input_state.pointer);
-                            gpu_context.update_params(view_state.coords.clone());
+                            view_state.zoom_with_anchor(*delta as f32, input_state.pointer);
+                            gpu_context.update_params(view_state.coords().clone());
                             window.request_redraw();
                         }
                         WindowEvent::MouseWheel {
@@ -250,8 +192,8 @@ pub async fn run() {
                                 }) => (*delta / 500.0) as f32,
                             };
                             if delta != 0.0 {
-                                view_state.rescale_to_point(delta, input_state.pointer);
-                                gpu_context.update_params(view_state.coords.clone());
+                                view_state.zoom_with_anchor(delta, input_state.pointer);
+                                gpu_context.update_params(view_state.coords().clone());
                                 window.request_redraw();
                             }
                         }
@@ -279,7 +221,7 @@ pub async fn run() {
                                     let delta_y = new_position.y - old_position.y;
                                     if delta_x.abs() >= 0.05 || delta_y.abs() >= 0.05 {
                                         view_state.move_by_screen_delta(delta_x, delta_y);
-                                        gpu_context.update_params(view_state.coords.clone());
+                                        gpu_context.update_params(view_state.coords().clone());
 
                                         window.request_redraw();
                                     }
@@ -334,12 +276,12 @@ pub async fn run() {
                         if view_reset {
                             view_state = ViewState::default(view_state.dimensions, scale_factor);
                         } else {
-                            view_state.scale_factor = scale_factor;
+                            view_state.set_scale_factor(scale_factor);
                         }
                         gpu_context.resize_and_update_params(
                             view_state.dimensions,
-                            view_state.scale_factor,
-                            view_state.coords.clone(),
+                            view_state.scale_factor(),
+                            view_state.coords().clone(),
                         );
                         window.request_redraw()
                     }
