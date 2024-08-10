@@ -35,7 +35,7 @@ struct InputState {
 
 #[derive(Debug)]
 enum UserEvent {
-    RenderDone,
+    WorkDone,
     RenderNeedsPolling,
     ViewScaleFactorChanged(f64),
 }
@@ -286,14 +286,14 @@ pub async fn run() {
                         window.request_redraw()
                     }
 
-                    UserEvent::RenderDone => {
-                        gpu_context.on_render_done();
+                    UserEvent::WorkDone => {
+                        gpu_context.on_work_done();
                         window.request_redraw()
                     }
                     UserEvent::RenderNeedsPolling => match gpu_context.poll() {
                         wgpu::MaintainResult::SubmissionQueueEmpty => {
                             event_loop_proxy
-                                .send_event(UserEvent::RenderDone)
+                                .send_event(UserEvent::WorkDone)
                                 .expect("Event loop closed");
                         }
                         wgpu::MaintainResult::Ok => {

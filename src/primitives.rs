@@ -50,6 +50,8 @@ pub struct Coordinates {
 }
 
 impl Coordinates {
+    pub const PRECISION_THRESHOLD: u32 = 1000;
+
     pub fn new(x: f32, y: f32, step: f32) -> Self {
         let x = WideFloat::from_f32(x, 2).expect("Invalid x");
         let y = WideFloat::from_f32(y, 2).expect("Invalid y");
@@ -65,9 +67,9 @@ impl Coordinates {
     }
 
     pub fn zoom_with_anchor(&mut self, mul: f32, x: i32, y: i32, max_limit: f32) {
-        if mul < 1.0 && self.step.requires_precision(1000) {
+        if mul < 1.0 && self.step.requires_precision(Self::PRECISION_THRESHOLD) {
             self.increase_precision();
-        } else if mul > 1.0 && self.step.excess_precision(1000) {
+        } else if mul > 1.0 && self.step.excess_precision(Self::PRECISION_THRESHOLD) {
             self.decrease_precision();
         }
 

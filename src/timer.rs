@@ -1,3 +1,6 @@
+#![cfg_attr(target_arch = "wasm32", allow(unused))]
+// See fps_balancer module
+
 pub struct Timer {
     internal: TimerImpl,
 }

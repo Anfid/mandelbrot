@@ -80,6 +80,10 @@ impl WideFloat {
         }
     }
 
+    pub fn from_raw(buffer: Vec<u32>) -> Self {
+        Self(buffer)
+    }
+
     // TODO: bring back f64 conversions
     pub fn as_f32_round(&self) -> f32 {
         if self.0.iter().all(|w| *w == 0) {
