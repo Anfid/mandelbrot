@@ -8,14 +8,14 @@ pub struct ViewState {
 }
 
 impl ViewState {
-    pub fn default(dimensions: Dimensions, scale_factor: f64) -> Self {
+    pub fn default(dimensions: Dimensions, scale_factor: f64, precision: usize) -> Self {
         let step = 4.0 * scale_factor as f32 / dimensions.shortest_side() as f32;
         let x = -(dimensions.width as f32 / scale_factor as f32 / 2.0) * step;
         let y = -(dimensions.height as f32 / scale_factor as f32 / 2.0) * step;
         Self {
             dimensions,
             scale_factor,
-            coords: Coordinates::new(x, y, step),
+            coords: Coordinates::new(x, y, step, precision),
         }
     }
 
@@ -32,6 +32,14 @@ impl ViewState {
 
     pub fn coords(&self) -> &Coordinates {
         &self.coords
+    }
+
+    pub fn set_precision(&mut self, precision: usize) {
+        self.coords.set_precision(precision)
+    }
+
+    pub fn precision(&self) -> usize {
+        self.coords.precision()
     }
 
     pub fn zoom_with_anchor(&mut self, delta: f32, anchor: Option<Point>) {

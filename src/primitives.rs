@@ -44,19 +44,39 @@ impl ScaledDimensions {
 
 #[derive(Debug, Clone)]
 pub struct Coordinates {
+    /// X coordinate
     pub x: WideFloat,
+    /// Y coordinate
     pub y: WideFloat,
+    /// delta per pixel
     pub step: WideFloat,
+    /// extra precision bit count
+    precision: usize,
 }
 
 impl Coordinates {
-    pub const PRECISION_THRESHOLD: u32 = 1000;
-
-    pub fn new(x: f32, y: f32, step: f32) -> Self {
+    pub fn new(x: f32, y: f32, step: f32, precision: usize) -> Self {
         let x = WideFloat::from_f32(x, 2).expect("Invalid x");
         let y = WideFloat::from_f32(y, 2).expect("Invalid y");
         let step = WideFloat::from_f32(step, 2).expect("Invalid step");
-        Coordinates { x, y, step }
+        Coordinates {
+            x,
+            y,
+            step,
+            precision,
+        }
+    }
+
+    pub fn new_magnified(x: f32, y: f32, size: usize, precision: usize) -> Self {
+        let step = WideFloat::min_positive(size, precision);
+        let x = WideFloat::from_f32(x, 2).expect("Invalid x");
+        let y = WideFloat::from_f32(y, 2).expect("Invalid y");
+        Coordinates {
+            x,
+            y,
+            step,
+            precision,
+        }
     }
 
     pub fn move_by_delta(&mut self, dx: f32, dy: f32) {
@@ -67,11 +87,7 @@ impl Coordinates {
     }
 
     pub fn zoom_with_anchor(&mut self, mul: f32, x: i32, y: i32, max_limit: f32) {
-        if mul < 1.0 && self.step.requires_precision(Self::PRECISION_THRESHOLD) {
-            self.increase_precision();
-        } else if mul > 1.0 && self.step.excess_precision(Self::PRECISION_THRESHOLD) {
-            self.decrease_precision();
-        }
+        self.change_precision(self.step.precision_diff(self.precision));
 
         let wide_x = WideFloat::from_i32(x, self.size());
         let wide_y = WideFloat::from_i32(y, self.size());
@@ -98,16 +114,18 @@ impl Coordinates {
         self.step.word_count()
     }
 
-    fn increase_precision(&mut self) {
-        self.x.increase_precision();
-        self.y.increase_precision();
-        self.step.increase_precision();
+    pub fn set_precision(&mut self, precision: usize) {
+        self.change_precision(self.step.precision_diff(precision))
     }
 
-    fn decrease_precision(&mut self) {
-        self.x.decrease_precision();
-        self.y.decrease_precision();
-        self.step.decrease_precision();
+    pub fn precision(&self) -> usize {
+        self.precision
+    }
+
+    fn change_precision(&mut self, word_diff: isize) {
+        self.x.change_precision(word_diff);
+        self.y.change_precision(word_diff);
+        self.step.change_precision(word_diff);
     }
 }
 

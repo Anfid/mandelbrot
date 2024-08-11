@@ -25,9 +25,15 @@ impl WideFloat {
         Self(vec![0; size])
     }
 
-    pub fn min_positive(size: usize) -> Self {
+    /// Returns minimal positive non-zero value with given number size and precision
+    ///
+    /// # Panics
+    /// * if `precision` is impossible to fit in the number of size `size`
+    pub fn min_positive(size: usize, precision: usize) -> Self {
+        let idx = precision / 32;
+        let v = 1 << (precision % 32);
         let mut buffer = vec![0; size];
-        buffer[0] = 1;
+        buffer[idx] = v;
         Self(buffer)
     }
 
@@ -78,10 +84,6 @@ impl WideFloat {
         } else {
             Ok(Self(buffer))
         }
-    }
-
-    pub fn from_raw(buffer: Vec<u32>) -> Self {
-        Self(buffer)
     }
 
     // TODO: bring back f64 conversions
@@ -137,25 +139,31 @@ impl WideFloat {
         self.0.len()
     }
 
-    /// Returns true if the least significant word of a positive number is less than or equal to `threshold` and the
-    /// remaining words are zero
-    pub fn requires_precision(&self, threshold: u32) -> bool {
-        self.0[0] <= threshold && self.0.iter().skip(1).all(|p| *p == 0)
+    /// Returns the amount of words that need to be trimmed/added for the number to accomodate at least `extra_bits`
+    /// bits after the first non-zero bit
+    pub fn precision_diff(&self, extra_bits: usize) -> isize {
+        let extra_words = (extra_bits / WORD_WIDTH) + 1;
+        let ls_word_threshold = (extra_bits as u32 % WORD_WIDTH as u32)
+            .checked_sub(1)
+            .map(|shift| 1 << shift)
+            .unwrap_or(0);
+        let words = self.0.iter().rev().skip_while(|w| **w == 0).count();
+        let word_diff = extra_words as isize - words as isize;
+        let ls_word = self.0.iter().rfind(|w| **w != 0).copied().unwrap_or(0);
+        word_diff + (ls_word <= ls_word_threshold) as isize
     }
 
-    /// Returns true if the second least significant word of a positive number is greater than or equal to `threshold`
-    pub fn excess_precision(&self, threshold: u32) -> bool {
-        self.0[1] >= threshold
-    }
-
-    /// Increases the word count of this number by adding a zeroed least significant word
-    pub fn increase_precision(&mut self) {
-        self.0.insert(0, 0);
-    }
-
-    /// Decreases the word count of this number by removing the least significant word
-    pub fn decrease_precision(&mut self) {
-        self.0.remove(0);
+    /// Changes the word count of this number by `word_diff`
+    pub fn change_precision(&mut self, word_diff: isize) {
+        if word_diff > 0 {
+            for _ in 0..word_diff {
+                self.0.insert(0, 0);
+            }
+        } else {
+            for _ in 0..-word_diff {
+                self.0.remove(0);
+            }
+        }
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -355,5 +363,32 @@ impl Ord for WideFloat {
             .rev()
             .skip(1)
             .cmp(other.0.iter().rev().skip(1))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn precision_diff() {
+        let float = WideFloat(vec![
+            0b00001000_00000001_01000000_00001000,
+            0b00001000_00100100_00001000_00010110,
+            0b00000000_00000000_10100110_01100010,
+            0b00000000_00000000_00000000_00000000,
+            0b00000000_00000000_00000000_00000000,
+            0b00000000_00000000_00000000_00000000,
+        ]);
+        assert_eq!(float.precision_diff(10), -2);
+        assert_eq!(float.precision_diff(16), -2);
+        assert_eq!(float.precision_diff(17), -1);
+        assert_eq!(float.precision_diff(32), -1);
+        assert_eq!(float.precision_diff(64), 0);
+        assert_eq!(float.precision_diff(80), 0);
+        assert_eq!(float.precision_diff(81), 1);
+        assert_eq!(float.precision_diff(96), 1);
+        assert_eq!(float.precision_diff(112), 1);
+        assert_eq!(float.precision_diff(113), 2);
     }
 }

@@ -20,6 +20,8 @@ pub struct Overlay {
     scale_factor_sqrt: f64,
     /// Indicates if pointer is interacting with control panel UI
     pointer_captured: bool,
+    // TODO: comment
+    precision_words: u32,
 }
 
 impl Overlay {
@@ -30,6 +32,7 @@ impl Overlay {
             settings_open: false,
             pointer_captured: false,
             scale_factor_sqrt: scale_factor.sqrt(),
+            precision_words: 0,
         }
     }
 
@@ -44,6 +47,8 @@ pub enum Message {
     ToggleSettings,
     CapturePointer(bool),
     ScaleChanged(f64),
+    PositionReset,
+    PrecisionChanged(u32),
 }
 
 impl Program for Overlay {
@@ -65,6 +70,16 @@ impl Program for Overlay {
                     .send_event(UserEvent::ViewScaleFactorChanged(
                         self.scale_factor_sqrt * self.scale_factor_sqrt,
                     ))
+                    .expect("Event loop closed")
+            }
+            Message::PositionReset => self
+                .event_loop_proxy
+                .send_event(UserEvent::PositionReset)
+                .expect("Event loop closed"),
+            Message::PrecisionChanged(precision) => {
+                self.precision_words = precision;
+                self.event_loop_proxy
+                    .send_event(UserEvent::PrecisionChanged(self.precision_bits()))
                     .expect("Event loop closed")
             }
         }
@@ -120,7 +135,13 @@ impl Overlay {
                 slider(1.0..=30.0_f64.sqrt(), self.scale_factor_sqrt, |scale| {
                     Message::ScaleChanged(scale)
                 })
-                .step(0.01)
+                .step(0.01),
+                text(format!("Precision: {}", self.precision_bits())),
+                slider(0..=4, self.precision_words, |p| {
+                    Message::PrecisionChanged(p)
+                })
+                .step(1u32),
+                button("Reset position").on_press(Message::PositionReset),
             ]
             .spacing(10),
         )
@@ -129,5 +150,13 @@ impl Overlay {
         .align_x(alignment::Horizontal::Left);
 
         scrollable(content).height(Length::Fill).into()
+    }
+
+    fn precision_bits(&self) -> usize {
+        if self.precision_words == 0 {
+            10
+        } else {
+            self.precision_words as usize * 32
+        }
     }
 }

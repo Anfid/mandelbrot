@@ -38,6 +38,8 @@ enum UserEvent {
     WorkDone,
     RenderNeedsPolling,
     ViewScaleFactorChanged(f64),
+    PositionReset,
+    PrecisionChanged(usize),
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
@@ -78,12 +80,15 @@ pub async fn run() {
     }
     let window = builder.with_title("Mandelbrot").build(&event_loop).unwrap();
 
+    let default_precision = 10;
+
     let mut window_scale_factor = window.scale_factor();
     let mut view_state = {
         let window_size = window.inner_size();
         ViewState::default(
             Dimensions::new_nonzero(window_size.width, window_size.height),
             window_scale_factor,
+            default_precision,
         )
     };
 
@@ -155,8 +160,11 @@ pub async fn run() {
                             let dimensions =
                                 Dimensions::new_nonzero(new_size.width, new_size.height);
                             if view_reset {
-                                view_state =
-                                    ViewState::default(dimensions, view_state.scale_factor());
+                                view_state = ViewState::default(
+                                    dimensions,
+                                    view_state.scale_factor(),
+                                    view_state.precision(),
+                                );
                             } else {
                                 view_state.dimensions = dimensions;
                             }
@@ -274,7 +282,11 @@ pub async fn run() {
                 Event::UserEvent(event) => match event {
                     UserEvent::ViewScaleFactorChanged(scale_factor) => {
                         if view_reset {
-                            view_state = ViewState::default(view_state.dimensions, scale_factor);
+                            view_state = ViewState::default(
+                                view_state.dimensions,
+                                scale_factor,
+                                view_state.precision(),
+                            );
                         } else {
                             view_state.set_scale_factor(scale_factor);
                         }
@@ -283,7 +295,24 @@ pub async fn run() {
                             view_state.scale_factor(),
                             view_state.coords().clone(),
                         );
-                        window.request_redraw()
+                        window.request_redraw();
+                    }
+
+                    UserEvent::PositionReset => {
+                        view_reset = true;
+                        view_state = ViewState::default(
+                            view_state.dimensions,
+                            view_state.scale_factor(),
+                            view_state.precision(),
+                        );
+                        gpu_context.update_params(view_state.coords().clone());
+                        window.request_redraw();
+                    }
+
+                    UserEvent::PrecisionChanged(precision) => {
+                        view_state.set_precision(precision);
+                        gpu_context.update_params(view_state.coords().clone());
+                        window.request_redraw();
                     }
 
                     UserEvent::WorkDone => {

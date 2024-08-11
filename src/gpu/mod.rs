@@ -81,20 +81,10 @@ enum ParamsUpdate {
     },
 }
 
-fn calibration_coords(size: usize) -> Coordinates {
-    use crate::float::WideFloat;
-
+fn calibration_coords(size: usize, precision: usize) -> Coordinates {
     // Coordinates of the top left corner of the biggest 16:10 rectangle that can be inscribed in the main cardioid
     // Thanks to Koitz for calculating them for me
-    Coordinates {
-        x: WideFloat::from_f32(-0.6827560061104002, size).unwrap(),
-        y: WideFloat::from_f32(-0.2914862451646308, size).unwrap(),
-        step: WideFloat::from_raw(
-            std::iter::once(Coordinates::PRECISION_THRESHOLD)
-                .chain(std::iter::repeat(0).take(size - 1))
-                .collect(),
-        ),
-    }
+    Coordinates::new_magnified(-0.6827560061104002, -0.2914862451646308, size, precision)
 }
 
 #[derive(Debug, Error)]
@@ -213,7 +203,7 @@ impl<'w> GpuContext<'w> {
             &queue,
             &ComputeParams::new(
                 scaled_dimensions,
-                &calibration_coords(coords.size()),
+                &calibration_coords(coords.size(), coords.precision()),
                 present_iterations,
             ),
         );
@@ -595,7 +585,7 @@ impl<'w> GpuContext<'w> {
                             &self.queue,
                             &ComputeParams::new(
                                 self.params.scaled_dimensions,
-                                &calibration_coords(coords.size()),
+                                &calibration_coords(coords.size(), coords.precision()),
                                 FpsBalancer::UNCALIBRATED_LIMIT,
                             ),
                         );
@@ -695,7 +685,7 @@ impl<'w> GpuContext<'w> {
                     &self.queue,
                     &ComputeParams::new(
                         self.params.scaled_dimensions,
-                        &calibration_coords(coords.size()),
+                        &calibration_coords(coords.size(), coords.precision()),
                         FpsBalancer::UNCALIBRATED_LIMIT,
                     ),
                 );
