@@ -82,12 +82,11 @@ pub async fn run() {
 
     let default_precision = 10;
 
-    let mut window_scale_factor = window.scale_factor();
     let mut view_state = {
         let window_size = window.inner_size();
         ViewState::default(
             Dimensions::new_nonzero(window_size.width, window_size.height),
-            window_scale_factor,
+            window.scale_factor(),
             default_precision,
         )
     };
@@ -96,7 +95,7 @@ pub async fn run() {
 
     let mut gpu_context = match GpuContext::new(
         &window,
-        view_state.dimensions,
+        view_state.dimensions(),
         view_state.scale_factor(),
         view_state.coords(),
         30.0,
@@ -125,7 +124,7 @@ pub async fn run() {
         }
     };
 
-    let controls = overlay::Overlay::new(event_loop_proxy.clone(), window_scale_factor);
+    let controls = overlay::Overlay::new(event_loop_proxy.clone(), window.scale_factor());
     let mut clipboard = iced_winit::Clipboard::unconnected();
     let mut ui_state = iced_runtime::program::State::new(
         controls,
@@ -134,8 +133,6 @@ pub async fn run() {
         &mut gpu_context.ui_debug,
     );
 
-    // Reset to default view on screen resize until any user input
-    let mut view_reset = true;
     let mut theme = iced::Theme::Light;
 
     event_loop
@@ -159,15 +156,7 @@ pub async fn run() {
                         WindowEvent::Resized(new_size) => {
                             let dimensions =
                                 Dimensions::new_nonzero(new_size.width, new_size.height);
-                            if view_reset {
-                                view_state = ViewState::default(
-                                    dimensions,
-                                    view_state.scale_factor(),
-                                    view_state.precision(),
-                                );
-                            } else {
-                                view_state.dimensions = dimensions;
-                            }
+                            view_state.set_dimensions(dimensions);
                             gpu_context.resize_and_update_params(
                                 dimensions,
                                 view_state.scale_factor(),
@@ -177,12 +166,10 @@ pub async fn run() {
                             window.request_redraw();
                         }
                         WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                            window_scale_factor = *scale_factor;
-                            gpu_context.rescale_ui(window_scale_factor);
+                            gpu_context.rescale_ui(*scale_factor);
                             window.request_redraw();
                         }
                         WindowEvent::TouchpadMagnify { delta, .. } => {
-                            view_reset = false;
                             view_state.zoom_with_anchor(*delta as f32, input_state.pointer);
                             gpu_context.update_params(view_state.coords().clone());
                             window.request_redraw();
@@ -191,7 +178,6 @@ pub async fn run() {
                             delta: scroll_delta,
                             ..
                         } => {
-                            view_reset = false;
                             let delta = match scroll_delta {
                                 MouseScrollDelta::LineDelta(_, delta) => *delta,
                                 MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition {
@@ -211,7 +197,6 @@ pub async fn run() {
                             button: MouseButton::Left,
                         } => {
                             if !ui_state.program().is_pointer_captured() {
-                                view_reset = false;
                                 input_state.grab.insert(*device_id);
                             }
                         }
@@ -270,28 +255,47 @@ pub async fn run() {
                         },
                         _ => {}
                     };
+
                     if let Some(iced_event) = iced_winit::conversion::window_event(
                         iced_core::window::Id::MAIN,
                         event,
-                        window_scale_factor,
+                        window.scale_factor(),
                         input_state.modifiers,
                     ) {
                         ui_state.queue_event(iced_event);
                     }
+
+                    // Update iced if any events are pending
+                    if !ui_state.is_queue_empty() {
+                        let _ = ui_state.update(
+                            gpu_context.viewport().logical_size(),
+                            input_state
+                                .pointer
+                                .map(|p| {
+                                    iced_winit::conversion::cursor_position(
+                                        winit::dpi::PhysicalPosition::new(p.x as f64, p.y as f64),
+                                        window.scale_factor(),
+                                    )
+                                })
+                                .map(iced_core::mouse::Cursor::Available)
+                                .unwrap_or(iced_core::mouse::Cursor::Unavailable),
+                            &mut gpu_context.ui_renderer,
+                            &theme,
+                            &iced_core::renderer::Style {
+                                text_color: theme.palette().text,
+                            },
+                            &mut clipboard,
+                            &mut gpu_context.ui_debug,
+                        );
+
+                        window.request_redraw();
+                    }
                 }
                 Event::UserEvent(event) => match event {
                     UserEvent::ViewScaleFactorChanged(scale_factor) => {
-                        if view_reset {
-                            view_state = ViewState::default(
-                                view_state.dimensions,
-                                scale_factor,
-                                view_state.precision(),
-                            );
-                        } else {
-                            view_state.set_scale_factor(scale_factor);
-                        }
+                        view_state.set_scale_factor(scale_factor);
                         gpu_context.resize_and_update_params(
-                            view_state.dimensions,
+                            view_state.dimensions(),
                             view_state.scale_factor(),
                             view_state.coords().clone(),
                         );
@@ -299,12 +303,7 @@ pub async fn run() {
                     }
 
                     UserEvent::PositionReset => {
-                        view_reset = true;
-                        view_state = ViewState::default(
-                            view_state.dimensions,
-                            view_state.scale_factor(),
-                            view_state.precision(),
-                        );
+                        view_state.reset();
                         gpu_context.update_params(view_state.coords().clone());
                         window.request_redraw();
                     }
@@ -334,31 +333,6 @@ pub async fn run() {
                 },
                 _ => {}
             };
-            // Update iced if any events are pending
-            if !ui_state.is_queue_empty() {
-                let _ = ui_state.update(
-                    gpu_context.viewport().logical_size(),
-                    input_state
-                        .pointer
-                        .map(|p| {
-                            iced_winit::conversion::cursor_position(
-                                winit::dpi::PhysicalPosition::new(p.x as f64, p.y as f64),
-                                window_scale_factor,
-                            )
-                        })
-                        .map(iced_core::mouse::Cursor::Available)
-                        .unwrap_or(iced_core::mouse::Cursor::Unavailable),
-                    &mut gpu_context.ui_renderer,
-                    &theme,
-                    &iced_core::renderer::Style {
-                        text_color: theme.palette().text,
-                    },
-                    &mut clipboard,
-                    &mut gpu_context.ui_debug,
-                );
-
-                window.request_redraw();
-            }
         })
         .unwrap();
 }
