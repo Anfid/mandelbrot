@@ -69,8 +69,8 @@ impl Coordinates {
 
     pub fn new_magnified(x: f32, y: f32, size: usize, precision: usize) -> Self {
         let step = WideFloat::min_positive(size, precision);
-        let x = WideFloat::from_f32(x, 2).expect("Invalid x");
-        let y = WideFloat::from_f32(y, 2).expect("Invalid y");
+        let x = WideFloat::from_f32(x, size).expect("Invalid x");
+        let y = WideFloat::from_f32(y, size).expect("Invalid y");
         Coordinates {
             x,
             y,
