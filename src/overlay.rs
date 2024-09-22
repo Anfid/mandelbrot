@@ -13,26 +13,36 @@ use crate::UserEvent;
 pub struct Overlay {
     /// Main event loop proxy to send events
     event_loop_proxy: EventLoopProxy<UserEvent>,
+    /// Indicates if pointer is interacting with control panel UI
+    pointer_captured: bool,
     /// Determines if control panel is displayed or hidden
     settings_open: bool,
+    /// Max calculation depth
+    max_depth: u32,
     /// Square root of fractal view scale factor. Square to get an actual scale factor value.
     /// Stored as sqrt to allow exponential scaling in the linear slider
     scale_factor_sqrt: f64,
-    /// Indicates if pointer is interacting with control panel UI
-    pointer_captured: bool,
-    // TODO: comment
+    /// Amount of extra 32 bit words of precision
     precision_words: u32,
+    /// Statistics and information
+    info: Info,
 }
 
 impl Overlay {
     /// Creates a new cotrol panel instance
-    pub fn new(event_loop_proxy: EventLoopProxy<UserEvent>, scale_factor: f64) -> Overlay {
+    pub fn new(
+        event_loop_proxy: EventLoopProxy<UserEvent>,
+        scale_factor: f64,
+        max_depth: u32,
+    ) -> Overlay {
         Overlay {
             event_loop_proxy,
-            settings_open: false,
             pointer_captured: false,
+            settings_open: false,
+            max_depth,
             scale_factor_sqrt: scale_factor.sqrt(),
             precision_words: 0,
+            info: Default::default(),
         }
     }
 
@@ -46,9 +56,16 @@ impl Overlay {
 pub enum Message {
     ToggleSettings,
     CapturePointer(bool),
+    MaxDepthChanged(u32),
     ScaleChanged(f64),
     PositionReset,
     PrecisionChanged(u32),
+    InfoUpdated(Info),
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Info {
+    pub depth: u32,
 }
 
 impl Program for Overlay {
@@ -64,12 +81,16 @@ impl Program for Overlay {
             Message::CapturePointer(status) => {
                 self.pointer_captured = status;
             }
+            Message::MaxDepthChanged(depth) => {
+                self.max_depth = depth;
+                self.event_loop_proxy
+                    .send_event(UserEvent::MaxDepthChanged(depth))
+                    .expect("Event loop closed");
+            }
             Message::ScaleChanged(scale) => {
                 self.scale_factor_sqrt = scale;
                 self.event_loop_proxy
-                    .send_event(UserEvent::ViewScaleFactorChanged(
-                        self.scale_factor_sqrt * self.scale_factor_sqrt,
-                    ))
+                    .send_event(UserEvent::ViewScaleFactorChanged(scale * scale))
                     .expect("Event loop closed")
             }
             Message::PositionReset => self
@@ -82,6 +103,7 @@ impl Program for Overlay {
                     .send_event(UserEvent::PrecisionChanged(self.precision_bits()))
                     .expect("Event loop closed")
             }
+            Message::InfoUpdated(info) => self.info = info,
         }
 
         Command::none()
@@ -128,6 +150,12 @@ impl Overlay {
     fn settings_view(&self) -> Element<Message, Theme, Renderer> {
         let content = container(
             column![
+                text(format!("Depth: {}/{}", self.info.depth, self.max_depth)),
+                slider(
+                    1..=(u32::MAX.ilog2() + 1) * 16,
+                    max_depth_to_slider(self.max_depth),
+                    |depth| { Message::MaxDepthChanged(slider_to_max_depth(depth)) },
+                ),
                 text(format!(
                     "Scale: {:.2}",
                     self.scale_factor_sqrt * self.scale_factor_sqrt
@@ -159,4 +187,19 @@ impl Overlay {
             self.precision_words as usize * 32
         }
     }
+}
+
+fn slider_to_max_depth(v: u32) -> u32 {
+    let p = v / 16;
+    let f = v % 16;
+    let part_size = (1u64 << p) as f32 / 16.0;
+    2u32.saturating_pow(p)
+        .saturating_add((part_size * f as f32) as u32)
+}
+
+fn max_depth_to_slider(v: u32) -> u32 {
+    let base = v.ilog2();
+    let part_size = 1 << base;
+    let part = v ^ part_size;
+    (base * 16).saturating_add((part as f32 / (part_size as f32 / 16 as f32)).ceil() as u32)
 }

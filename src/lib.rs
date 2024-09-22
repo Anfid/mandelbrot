@@ -12,6 +12,7 @@ use winit::{
     window::WindowBuilder,
 };
 
+mod defaults;
 mod float;
 mod fps_balancer;
 mod gpu;
@@ -24,8 +25,6 @@ use crate::gpu::GpuContext;
 use crate::primitives::{Dimensions, Point};
 use crate::view_state::ViewState;
 
-const MAX_DEPTH: u32 = u32::MAX;
-
 #[derive(Debug, Default)]
 struct InputState {
     modifiers: winit::keyboard::ModifiersState,
@@ -35,11 +34,11 @@ struct InputState {
 
 #[derive(Debug)]
 enum UserEvent {
-    WorkDone,
     RenderNeedsPolling,
     ViewScaleFactorChanged(f64),
     PositionReset,
     PrecisionChanged(usize),
+    MaxDepthChanged(u32),
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
@@ -80,14 +79,12 @@ pub async fn run() {
     }
     let window = builder.with_title("Mandelbrot").build(&event_loop).unwrap();
 
-    let default_precision = 10;
-
     let mut view_state = {
         let window_size = window.inner_size();
         ViewState::default(
             Dimensions::new_nonzero(window_size.width, window_size.height),
             window.scale_factor(),
-            default_precision,
+            defaults::PRECISION_BITS,
         )
     };
 
@@ -99,6 +96,7 @@ pub async fn run() {
         view_state.scale_factor(),
         view_state.coords(),
         30.0,
+        defaults::MAX_DEPTH,
     )
     .await
     {
@@ -124,10 +122,14 @@ pub async fn run() {
         }
     };
 
-    let controls = overlay::Overlay::new(event_loop_proxy.clone(), window.scale_factor());
+    let overlay = overlay::Overlay::new(
+        event_loop_proxy.clone(),
+        window.scale_factor(),
+        defaults::MAX_DEPTH,
+    );
     let mut clipboard = iced_winit::Clipboard::unconnected();
     let mut ui_state = iced_runtime::program::State::new(
-        controls,
+        overlay,
         gpu_context.viewport().logical_size(),
         &mut gpu_context.ui_renderer,
         &mut gpu_context.ui_debug,
@@ -314,15 +316,16 @@ pub async fn run() {
                         window.request_redraw();
                     }
 
-                    UserEvent::WorkDone => {
-                        gpu_context.on_work_done();
-                        window.request_redraw()
+                    UserEvent::MaxDepthChanged(max_depth) => {
+                        gpu_context.set_max_depth(max_depth);
                     }
+
                     UserEvent::RenderNeedsPolling => match gpu_context.poll() {
                         wgpu::MaintainResult::SubmissionQueueEmpty => {
-                            event_loop_proxy
-                                .send_event(UserEvent::WorkDone)
-                                .expect("Event loop closed");
+                            ui_state.queue_message(overlay::Message::InfoUpdated(overlay::Info {
+                                depth: gpu_context.current_depth(),
+                            }));
+                            window.request_redraw()
                         }
                         wgpu::MaintainResult::Ok => {
                             event_loop_proxy

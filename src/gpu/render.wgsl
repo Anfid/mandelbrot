@@ -31,7 +31,7 @@ fn colors(i: u32) -> vec3<f32> {
     var buffer: u32 = 20;
     let cutoff = 0.2;
 
-    if i == params.max {
+    if i >= params.max {
         return vec3<f32>(0.0, 0.0, 0.0);
     } else if i < buffer {
         let n = f32(i) / f32(buffer - 1);

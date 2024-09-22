@@ -7,7 +7,6 @@ use winit::window::Window;
 
 use crate::fps_balancer::FpsBalancer;
 use crate::primitives::{Coordinates, Dimensions, ScaledDimensions};
-use crate::MAX_DEPTH;
 
 mod compute;
 mod render;
@@ -42,27 +41,31 @@ pub struct GpuContext<'w> {
 }
 
 struct State {
+    /// Current calculated depth
+    depth: u32,
     /// Amount of iterations for this invocation
     fps_balancer: FpsBalancer,
+    /// Current task in progress
     task: Option<Task>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Task {
-    Render,
+    Render(u32),
     Calibration,
 }
 
 /// Fractal calculation parameters that CPU is responsible to keep track of
 struct ParamsState {
-    /// Current calculated depth
-    depth: u32,
+    /// Calculation iterations limit
+    max_depth: u32,
 
     /// View scale factor
     scale: f64,
 
     /// The amount of words in each number in comupte shader
     word_count: usize,
+
     /// View dimensions, scaled by view_scale
     scaled_dimensions: ScaledDimensions,
 
@@ -106,6 +109,7 @@ impl<'w> GpuContext<'w> {
         scale: f64,
         coords: &Coordinates,
         fps: f64,
+        max_depth: u32,
     ) -> Result<Self, ContextCreationError> {
         let scaled_dimensions = dimensions.scale_to(scale);
 
@@ -115,12 +119,13 @@ impl<'w> GpuContext<'w> {
         );
 
         let state = State {
+            depth: 0,
             fps_balancer: FpsBalancer::new(fps),
             task: None,
         };
 
         let params = ParamsState {
-            depth: 0,
+            max_depth,
             scale,
             word_count: coords.size(),
             scaled_dimensions,
@@ -273,7 +278,7 @@ impl<'w> GpuContext<'w> {
         let mut config = surface
             .get_default_config(&adapter, dimensions.width, dimensions.height)
             .ok_or(ContextCreationError::SurfaceUnsupported)?;
-        config.present_mode = wgpu::PresentMode::AutoVsync;
+        config.present_mode = wgpu::PresentMode::AutoNoVsync;
         surface.configure(&device, &config);
 
         let ui_renderer = iced_wgpu::Renderer::new(
@@ -341,75 +346,56 @@ impl<'w> GpuContext<'w> {
         }
     }
 
+    pub fn set_max_depth(&mut self, max_depth: u32) {
+        self.params.max_depth = max_depth;
+    }
+
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         if self.state.task.is_some() {
             return Ok(());
         }
-        self.state.task = Some(Task::Render);
-        if self.params.update.is_none() {
-            self.state.fps_balancer.start_iteration_frame();
-        } else {
-            self.state
-                .fps_balancer
-                .start_presentation_frame(self.params.word_count);
-        }
 
-        self.apply_updates();
+        self.start_render_frame();
 
-        let dimensions = self.dimensions().scale_to(self.params.scale);
-
-        let frame = self
-            .surface
-            .get_current_texture()
-            .expect("Failed to acquire next swap chain texture");
+        let frame = self.surface.get_current_texture()?;
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let iterations = if self.params.depth == 0 {
-            self.state
-                .fps_balancer
-                .present_iterations(self.params.word_count)
-        } else {
-            self.state.fps_balancer.iteration_iterations
-        };
-        self.params.depth = min(self.params.depth.saturating_add(iterations), MAX_DEPTH);
-        self.render_bindings.write(
-            &self.queue,
-            FragmentParams {
-                size: dimensions,
-                depth: self.params.depth,
-            },
-        );
 
         let mut command_encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
 
-        command_encoder.push_debug_group("Compute");
-        {
-            let mut cpass = command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: None,
-            });
-            cpass.set_pipeline(&self.compute_pipeline);
-            cpass.set_bind_group(0, &self.compute_bindings.bind_group, &[]);
-            cpass.dispatch_workgroups(dimensions.aligned_width(64) / 64, dimensions.height, 1);
-        }
-        command_encoder.pop_debug_group();
+        if self.state.depth < self.params.max_depth {
+            command_encoder.push_debug_group("Compute");
+            {
+                let mut cpass = command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: None,
+                    timestamp_writes: None,
+                });
+                cpass.set_pipeline(&self.compute_pipeline);
+                cpass.set_bind_group(0, &self.compute_bindings.bind_group, &[]);
+                cpass.dispatch_workgroups(
+                    self.params.scaled_dimensions.aligned_width(64) / 64,
+                    self.params.scaled_dimensions.height,
+                    1,
+                );
+            }
+            command_encoder.pop_debug_group();
 
-        command_encoder.copy_buffer_to_texture(
-            wgpu::ImageCopyBuffer {
-                buffer: &self.compute_bindings.result_buffer,
-                layout: wgpu::ImageDataLayout {
-                    offset: 0,
-                    bytes_per_row: Some(self.render_bindings.texture.size().width * 4),
-                    rows_per_image: None,
+            command_encoder.copy_buffer_to_texture(
+                wgpu::ImageCopyBuffer {
+                    buffer: &self.compute_bindings.result_buffer,
+                    layout: wgpu::ImageDataLayout {
+                        offset: 0,
+                        bytes_per_row: Some(self.render_bindings.texture.size().width * 4),
+                        rows_per_image: None,
+                    },
                 },
-            },
-            self.render_bindings.texture.as_image_copy(),
-            self.render_bindings.texture.size(),
-        );
+                self.render_bindings.texture.as_image_copy(),
+                self.render_bindings.texture.size(),
+            );
+        }
 
         command_encoder.push_debug_group("Render");
         {
@@ -455,30 +441,29 @@ impl<'w> GpuContext<'w> {
         Ok(())
     }
 
-    pub fn poll(&self) -> wgpu::MaintainResult {
-        self.device.poll(wgpu::Maintain::Poll)
-    }
+    pub fn poll(&mut self) -> wgpu::MaintainResult {
+        match self.device.poll(wgpu::Maintain::Poll) {
+            wgpu::MaintainResult::SubmissionQueueEmpty => {
+                self.state.fps_balancer.end_frame();
 
-    pub fn on_work_done(&mut self) {
-        self.state.fps_balancer.end_frame();
-
-        if self.state.task == Some(Task::Render)
-            && !self
-                .state
-                .fps_balancer
-                .is_calibrated(self.params.word_count)
-        {
-            self.calibrate();
-            self.state.task = Some(Task::Calibration);
-        } else {
-            self.state.task = None;
-        }
-    }
-
-    pub fn dimensions(&self) -> Dimensions {
-        Dimensions {
-            width: self.config.width,
-            height: self.config.height,
+                match self.state.task.take() {
+                    Some(Task::Render(new_depth)) => {
+                        self.state.depth = new_depth;
+                        if !self
+                            .state
+                            .fps_balancer
+                            .is_calibrated(self.params.word_count)
+                        {
+                            self.start_calibration_frame();
+                            wgpu::MaintainResult::Ok
+                        } else {
+                            wgpu::MaintainResult::SubmissionQueueEmpty
+                        }
+                    }
+                    None | Some(Task::Calibration) => wgpu::MaintainResult::SubmissionQueueEmpty,
+                }
+            }
+            wgpu::MaintainResult::Ok => wgpu::MaintainResult::Ok,
         }
     }
 
@@ -486,20 +471,26 @@ impl<'w> GpuContext<'w> {
         &self.viewport
     }
 
-    fn calibrate(&mut self) {
+    pub fn current_depth(&self) -> u32 {
+        self.state.depth
+    }
+
+    fn start_calibration_frame(&mut self) {
+        debug_assert!(self.state.task.is_none());
+
+        self.state.task = Some(Task::Calibration);
+
         let iter_count = self
             .state
             .fps_balancer
             .start_calibration_frame(self.params.word_count);
-
-        let dimensions = self.dimensions().scale_to(self.params.scale);
 
         let mut command_encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
 
         self.calibration_bindings
-            .write_iterate(&mut self.queue, iter_count);
+            .write_iterate_reset(&mut self.queue, iter_count);
 
         command_encoder.push_debug_group("Calibrate");
         {
@@ -509,7 +500,11 @@ impl<'w> GpuContext<'w> {
             });
             cpass.set_pipeline(&self.compute_pipeline);
             cpass.set_bind_group(0, &self.calibration_bindings.bind_group, &[]);
-            cpass.dispatch_workgroups(dimensions.aligned_width(64) / 64, dimensions.height, 1);
+            cpass.dispatch_workgroups(
+                self.params.scaled_dimensions.aligned_width(64) / 64,
+                self.params.scaled_dimensions.height,
+                1,
+            );
         }
         command_encoder.pop_debug_group();
 
@@ -517,11 +512,19 @@ impl<'w> GpuContext<'w> {
         self.queue.submit(Some(command_encoder.finish()));
     }
 
-    fn apply_updates(&mut self) {
+    fn start_render_frame(&mut self) {
+        debug_assert!(self.state.task.is_none());
+
         match self.params.update.take() {
             Some(ParamsUpdate::Move { coords }) => {
                 // Reset calculated depth
-                self.params.depth = 0;
+                self.state.depth = 0;
+
+                let iterations = self
+                    .state
+                    .fps_balancer
+                    .present_iterations(self.params.word_count);
+                let new_depth = min(iterations, self.params.max_depth);
 
                 // NOTE: Not extracted into a dedicated function since it's a temporary solution while override
                 // variables are not supported in wgpu
@@ -562,13 +565,7 @@ impl<'w> GpuContext<'w> {
                     )
                     .write(
                         &self.queue,
-                        &ComputeParams::new(
-                            self.params.scaled_dimensions,
-                            &coords,
-                            self.state
-                                .fps_balancer
-                                .present_iterations(self.params.word_count),
-                        ),
+                        &ComputeParams::new(self.params.scaled_dimensions, &coords, new_depth),
                     );
                     if !self
                         .state
@@ -593,14 +590,24 @@ impl<'w> GpuContext<'w> {
                 } else {
                     self.compute_bindings.write(
                         &self.queue,
-                        &ComputeParams::new(
-                            self.dimensions().scale_to(self.params.scale),
-                            &coords,
-                            self.state
-                                .fps_balancer
-                                .present_iterations(self.params.word_count),
-                        ),
+                        &ComputeParams::new(self.params.scaled_dimensions, &coords, new_depth),
                     );
+                }
+
+                self.render_bindings.write(
+                    &self.queue,
+                    FragmentParams {
+                        size: self.params.scaled_dimensions,
+                        depth: new_depth,
+                    },
+                );
+
+                self.state.task = Some(Task::Render(new_depth));
+
+                if new_depth == iterations {
+                    self.state
+                        .fps_balancer
+                        .start_presentation_frame(self.params.word_count)
                 }
             }
             Some(ParamsUpdate::Resize {
@@ -609,10 +616,16 @@ impl<'w> GpuContext<'w> {
                 coords,
             }) => {
                 // Reset calculated depth
-                self.params.depth = 0;
+                self.state.depth = 0;
 
                 // Reset fps balancer
                 self.state.fps_balancer.reset();
+
+                let iterations = self
+                    .state
+                    .fps_balancer
+                    .present_iterations(self.params.word_count);
+                let new_depth = min(iterations, self.params.max_depth);
 
                 // Update window scale
                 self.params.scale = scale;
@@ -665,13 +678,7 @@ impl<'w> GpuContext<'w> {
                 )
                 .write(
                     &self.queue,
-                    &ComputeParams::new(
-                        scaled_dimensions,
-                        &coords,
-                        self.state
-                            .fps_balancer
-                            .present_iterations(self.params.word_count),
-                    ),
+                    &ComputeParams::new(scaled_dimensions, &coords, new_depth),
                 );
 
                 // Update calibration bindings
@@ -700,19 +707,46 @@ impl<'w> GpuContext<'w> {
                     &self.queue,
                     FragmentParams {
                         size: scaled_dimensions,
-                        depth: 0,
+                        depth: new_depth,
                     },
                 );
-            }
-            None => {
-                let iterations = if self.params.depth == 0 {
+
+                self.state.task = Some(Task::Render(new_depth));
+
+                if iterations == new_depth {
                     self.state
                         .fps_balancer
-                        .present_iterations(self.params.word_count)
+                        .start_presentation_frame(self.params.word_count);
+                }
+            }
+            None => {
+                let iterations = self.state.fps_balancer.iteration_iterations;
+                let new_depth = self
+                    .state
+                    .depth
+                    .saturating_add(iterations)
+                    .min(self.params.max_depth);
+
+                if self.state.depth < new_depth {
+                    self.compute_bindings.write_iterate(&self.queue, new_depth);
+
+                    self.state.task = Some(Task::Render(new_depth));
+
+                    // Start frame timer if iteration count wasn't clamped
+                    if new_depth - self.state.depth == iterations {
+                        self.state.fps_balancer.start_iteration_frame()
+                    }
                 } else {
-                    self.state.fps_balancer.iteration_iterations
-                };
-                self.compute_bindings.write_iterate(&self.queue, iterations);
+                    self.state.task = Some(Task::Render(self.state.depth));
+                }
+
+                self.render_bindings.write(
+                    &self.queue,
+                    FragmentParams {
+                        size: self.params.scaled_dimensions,
+                        depth: new_depth,
+                    },
+                );
             }
         }
     }

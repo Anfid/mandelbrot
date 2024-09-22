@@ -1,7 +1,5 @@
-const max: u32 = 4294967295u;
-
 struct Parameters {
-    iteration_limit: u32,
+    depth_limit: u32,
     reset: u32,
     size: vec2<u32>,
     words: array<u32>,
@@ -27,7 +25,7 @@ var<storage, read_write> intermediate: array<u32>;
 // 2: origin Y
 // 3: iteration X
 // 4: iteration Y
-fn wide_mandelbrot(start_iter: u32, iteration_limit: u32) -> u32 {
+fn wide_mandelbrot(start_iter: u32, depth_limit: u32) -> u32 {
     let origin_x = NumView(0u * word_count);
     let origin_y = NumView(1u * word_count);
 
@@ -46,7 +44,7 @@ fn wide_mandelbrot(start_iter: u32, iteration_limit: u32) -> u32 {
 
     var i: u32 = start_iter;
     wide_clone(x2, tmp);
-    while i < max && i < start_iter + iteration_limit && wide_cmp(wide_add(tmp, y2), 4) == -1 {
+    while i < depth_limit && wide_cmp(wide_add(tmp, y2), 4) == -1 {
         // y = square(x2 + y2) - x2 - y2 + origin_y
         // x = x2 - y2 + origin_x
 
@@ -142,8 +140,8 @@ fn main(
         }
     }
 
-    let iteration_limit = params.iteration_limit;
-    let iter_count = wide_mandelbrot(iterstart, iteration_limit);
+    let depth_limit = params.depth_limit;
+    let iter_count = wide_mandelbrot(iterstart, depth_limit);
 
     // Write intermediate X and Y results to continue on the next iteration
     for (var i = 0u; i < 2 * word_count; i++) {

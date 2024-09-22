@@ -2,7 +2,7 @@ use crate::primitives::{Coordinates, ScaledDimensions};
 
 #[derive(Debug, Clone)]
 pub struct ComputeParams<'c> {
-    iteration_limit: u32,
+    depth_limit: u32,
     reset: bool,
     size: ScaledDimensions,
     coords: &'c Coordinates,
@@ -116,11 +116,19 @@ impl ComputeBindings {
         queue.write_buffer(&self.params_buffer, 0, &params.encode());
     }
 
-    pub fn write_iterate(&self, queue: &wgpu::Queue, new_iteration_limit: u32) {
+    pub fn write_iterate(&self, queue: &wgpu::Queue, depth_limit: u32) {
         // Unset reset flag and write new iteration limit
         let mut buffer = [0; 8];
-        buffer[0..4].copy_from_slice(&bytemuck::cast::<_, [u8; 4]>(new_iteration_limit));
+        buffer[0..4].copy_from_slice(&bytemuck::cast::<_, [u8; 4]>(depth_limit));
         buffer[4..8].copy_from_slice(&[0, 0, 0, 0]);
+        queue.write_buffer(&self.params_buffer, 0, &buffer);
+    }
+
+    pub fn write_iterate_reset(&self, queue: &wgpu::Queue, depth_limit: u32) {
+        // Unset reset flag and write new iteration limit
+        let mut buffer = [0; 8];
+        buffer[0..4].copy_from_slice(&bytemuck::cast::<_, [u8; 4]>(depth_limit));
+        buffer[4..8].copy_from_slice(&[0, 0, 0, 1]);
         queue.write_buffer(&self.params_buffer, 0, &buffer);
     }
 }
@@ -135,18 +143,18 @@ impl UninitializedComputeBindings {
 }
 
 impl<'c> ComputeParams<'c> {
-    pub fn new(size: ScaledDimensions, coords: &'c Coordinates, iteration_limit: u32) -> Self {
+    pub fn new(size: ScaledDimensions, coords: &'c Coordinates, depth_limit: u32) -> Self {
         Self {
             size,
             coords,
-            iteration_limit,
+            depth_limit,
             reset: true,
         }
     }
 
     fn encode(&self) -> Vec<u8> {
         let mut buffer = Vec::with_capacity(size_hint(self.coords.size()) as usize);
-        buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.iteration_limit));
+        buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.depth_limit));
         buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.reset as u32));
         buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.size.aligned_width(64)));
         buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.size.height));
