@@ -55,10 +55,25 @@ enum Task {
     Calibration,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColorParams {
+    /// Exponentiation of depth for color shift
+    pub depth_exp: f32,
+    /// Static color shift, useful range is 0.0 - 2 pi
+    pub shift: f32,
+
+    pub cutoff: f32,
+    /// Amount of iterations required to go from increasing opacity to cycling colors
+    pub buffer: u32,
+}
+
 /// Fractal calculation parameters that CPU is responsible to keep track of
 struct ParamsState {
     /// Calculation iterations limit
     max_depth: u32,
+
+    /// Parameters that only affect rendered colors
+    color: ColorParams,
 
     /// View scale factor
     scale: f64,
@@ -110,6 +125,7 @@ impl<'w> GpuContext<'w> {
         coords: &Coordinates,
         fps: f64,
         max_depth: u32,
+        color: ColorParams,
     ) -> Result<Self, ContextCreationError> {
         let scaled_dimensions = dimensions.scale_to(scale);
 
@@ -126,6 +142,7 @@ impl<'w> GpuContext<'w> {
 
         let params = ParamsState {
             max_depth,
+            color,
             scale,
             word_count: coords.size(),
             scaled_dimensions,
@@ -242,6 +259,10 @@ impl<'w> GpuContext<'w> {
                 FragmentParams {
                     size: scaled_dimensions,
                     depth: 0,
+                    pow: params.color.depth_exp,
+                    color_shift: params.color.shift,
+                    color_cutoff: params.color.cutoff,
+                    color_buffer: params.color.buffer,
                 },
             );
 
@@ -348,6 +369,10 @@ impl<'w> GpuContext<'w> {
 
     pub fn set_max_depth(&mut self, max_depth: u32) {
         self.params.max_depth = max_depth;
+    }
+
+    pub fn set_color(&mut self, color: ColorParams) {
+        self.params.color = color;
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -457,6 +482,7 @@ impl<'w> GpuContext<'w> {
                             self.start_calibration_frame();
                             wgpu::MaintainResult::Ok
                         } else {
+                            //self.params.depth_exp -= 0.001;
                             wgpu::MaintainResult::SubmissionQueueEmpty
                         }
                     }
@@ -599,6 +625,10 @@ impl<'w> GpuContext<'w> {
                     FragmentParams {
                         size: self.params.scaled_dimensions,
                         depth: new_depth,
+                        pow: self.params.color.depth_exp,
+                        color_shift: self.params.color.shift,
+                        color_cutoff: self.params.color.cutoff,
+                        color_buffer: self.params.color.buffer,
                     },
                 );
 
@@ -708,6 +738,10 @@ impl<'w> GpuContext<'w> {
                     FragmentParams {
                         size: scaled_dimensions,
                         depth: new_depth,
+                        pow: self.params.color.depth_exp,
+                        color_shift: self.params.color.shift,
+                        color_cutoff: self.params.color.cutoff,
+                        color_buffer: self.params.color.buffer,
                     },
                 );
 
@@ -745,6 +779,10 @@ impl<'w> GpuContext<'w> {
                     FragmentParams {
                         size: self.params.scaled_dimensions,
                         depth: new_depth,
+                        pow: self.params.color.depth_exp,
+                        color_shift: self.params.color.shift,
+                        color_cutoff: self.params.color.cutoff,
+                        color_buffer: self.params.color.buffer,
                     },
                 );
             }

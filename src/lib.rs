@@ -21,7 +21,7 @@ mod primitives;
 mod timer;
 mod view_state;
 
-use crate::gpu::GpuContext;
+use crate::gpu::{ColorParams, GpuContext};
 use crate::primitives::{Dimensions, Point};
 use crate::view_state::ViewState;
 
@@ -39,6 +39,7 @@ enum UserEvent {
     PositionReset,
     PrecisionChanged(usize),
     MaxDepthChanged(u32),
+    ColorChanged(ColorParams),
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
@@ -90,6 +91,12 @@ pub async fn run() {
 
     let mut input_state = InputState::default();
 
+    let default_colors = ColorParams {
+        depth_exp: 0.3,
+        shift: 0.0,
+        cutoff: 0.2,
+        buffer: 20,
+    };
     let mut gpu_context = match GpuContext::new(
         &window,
         view_state.dimensions(),
@@ -97,6 +104,7 @@ pub async fn run() {
         view_state.coords(),
         30.0,
         defaults::MAX_DEPTH,
+        default_colors,
     )
     .await
     {
@@ -126,6 +134,7 @@ pub async fn run() {
         event_loop_proxy.clone(),
         window.scale_factor(),
         defaults::MAX_DEPTH,
+        default_colors,
     );
     let mut clipboard = iced_winit::Clipboard::unconnected();
     let mut ui_state = iced_runtime::program::State::new(
@@ -318,6 +327,10 @@ pub async fn run() {
 
                     UserEvent::MaxDepthChanged(max_depth) => {
                         gpu_context.set_max_depth(max_depth);
+                    }
+
+                    UserEvent::ColorChanged(colors) => {
+                        gpu_context.set_color(colors);
                     }
 
                     UserEvent::RenderNeedsPolling => match gpu_context.poll() {

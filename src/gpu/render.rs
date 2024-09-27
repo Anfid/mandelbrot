@@ -6,6 +6,10 @@ use bytemuck::{Pod, Zeroable};
 pub struct FragmentParams {
     pub size: ScaledDimensions,
     pub depth: u32,
+    pub pow: f32,
+    pub color_shift: f32,
+    pub color_cutoff: f32,
+    pub color_buffer: u32,
 }
 
 pub struct RenderBindings {
@@ -70,7 +74,7 @@ impl RenderBindings {
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("FragmentParams"),
-            size: 16,
+            size: 32,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });

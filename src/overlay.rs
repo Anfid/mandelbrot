@@ -6,6 +6,7 @@ use iced_winit::core::{Element, Length};
 use iced_winit::runtime::{Command, Program};
 use winit::event_loop::EventLoopProxy;
 
+use crate::gpu::ColorParams;
 use crate::UserEvent;
 
 /// Iced Program responsible for control panel UI
@@ -22,6 +23,8 @@ pub struct Overlay {
     /// Square root of fractal view scale factor. Square to get an actual scale factor value.
     /// Stored as sqrt to allow exponential scaling in the linear slider
     scale_factor_sqrt: f64,
+    /// Color parameters
+    color_params: ColorParams,
     /// Amount of extra 32 bit words of precision
     precision_words: u32,
     /// Statistics and information
@@ -34,6 +37,7 @@ impl Overlay {
         event_loop_proxy: EventLoopProxy<UserEvent>,
         scale_factor: f64,
         max_depth: u32,
+        color_params: ColorParams,
     ) -> Overlay {
         Overlay {
             event_loop_proxy,
@@ -41,6 +45,7 @@ impl Overlay {
             settings_open: false,
             max_depth,
             scale_factor_sqrt: scale_factor.sqrt(),
+            color_params,
             precision_words: 0,
             info: Default::default(),
         }
@@ -58,6 +63,7 @@ pub enum Message {
     CapturePointer(bool),
     MaxDepthChanged(u32),
     ScaleChanged(f64),
+    ColorChanged(ColorParams),
     PositionReset,
     PrecisionChanged(u32),
     InfoUpdated(Info),
@@ -91,6 +97,12 @@ impl Program for Overlay {
                 self.scale_factor_sqrt = scale;
                 self.event_loop_proxy
                     .send_event(UserEvent::ViewScaleFactorChanged(scale * scale))
+                    .expect("Event loop closed")
+            }
+            Message::ColorChanged(colors) => {
+                self.color_params = colors;
+                self.event_loop_proxy
+                    .send_event(UserEvent::ColorChanged(colors))
                     .expect("Event loop closed")
             }
             Message::PositionReset => self
@@ -162,6 +174,49 @@ impl Overlay {
                 )),
                 slider(1.0..=30.0_f64.sqrt(), self.scale_factor_sqrt, |scale| {
                     Message::ScaleChanged(scale)
+                })
+                .step(0.01),
+                text(format!(
+                    "Color exponentiation: {}",
+                    match self.color_params.depth_exp {
+                        0.0 => String::from("log2(n)"),
+                        1.0 => String::from("n"),
+                        pow => format!("{:.3}√n", pow.recip()),
+                    }
+                )),
+                slider(0.0..=1.0, self.color_params.depth_exp, |depth_exp| {
+                    let depth_exp = if depth_exp < 0.15 { 0.0 } else { depth_exp };
+                    Message::ColorChanged(ColorParams {
+                        depth_exp,
+                        ..self.color_params
+                    })
+                })
+                .step(0.001),
+                text("Color shift"),
+                slider(
+                    0.0..=2.0 * std::f32::consts::PI,
+                    self.color_params.shift,
+                    |shift| {
+                        Message::ColorChanged(ColorParams {
+                            shift,
+                            ..self.color_params
+                        })
+                    }
+                )
+                .step(0.01),
+                text("Color buffer"),
+                slider(2..=100, self.color_params.buffer, |buffer| {
+                    Message::ColorChanged(ColorParams {
+                        buffer,
+                        ..self.color_params
+                    })
+                }),
+                text("Color cutoff"),
+                slider(0.0..=2.0, self.color_params.cutoff, |cutoff| {
+                    Message::ColorChanged(ColorParams {
+                        cutoff,
+                        ..self.color_params
+                    })
                 })
                 .step(0.01),
                 text(format!("Precision: {}", self.precision_bits())),
