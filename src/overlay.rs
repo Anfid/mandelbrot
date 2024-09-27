@@ -256,5 +256,5 @@ fn max_depth_to_slider(v: u32) -> u32 {
     let base = v.ilog2();
     let part_size = 1 << base;
     let part = v ^ part_size;
-    (base * 16).saturating_add((part as f32 / (part_size as f32 / 16 as f32)).ceil() as u32)
+    (base * 16).saturating_add((part as f32 / (part_size as f32 / 16.0)).ceil() as u32)
 }

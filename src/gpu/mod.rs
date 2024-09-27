@@ -102,6 +102,7 @@ enum ParamsUpdate {
 fn calibration_coords(size: usize, precision: usize) -> Coordinates {
     // Coordinates of the top left corner of the biggest 16:10 rectangle that can be inscribed in the main cardioid
     // Thanks to Koitz for calculating them for me
+    #[allow(clippy::excessive_precision)]
     Coordinates::new_magnified(-0.6827560061104002, -0.2914862451646308, size, precision)
 }
 
@@ -205,7 +206,7 @@ impl<'w> GpuContext<'w> {
             device.create_bind_group_layout(&ComputeBindings::bind_group_layout_desc());
 
         let present_iterations = state.fps_balancer.present_iterations(params.word_count);
-        let compute_bindings = ComputeBindings::new(
+        let compute_bindings = ComputeBindings::build(
             &device,
             &compute_bind_group_layout,
             scaled_dimensions,
@@ -215,7 +216,7 @@ impl<'w> GpuContext<'w> {
             &queue,
             &ComputeParams::new(scaled_dimensions, coords, present_iterations),
         );
-        let calibration_bindings = ComputeBindings::new(
+        let calibration_bindings = ComputeBindings::build(
             &device,
             &compute_bind_group_layout,
             scaled_dimensions,
@@ -254,7 +255,7 @@ impl<'w> GpuContext<'w> {
             });
 
         let render_bindings =
-            RenderBindings::new(&device, &render_bind_group_layout, scaled_dimensions).write(
+            RenderBindings::build(&device, &render_bind_group_layout, scaled_dimensions).write(
                 &queue,
                 FragmentParams {
                     size: scaled_dimensions,
@@ -516,7 +517,7 @@ impl<'w> GpuContext<'w> {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
 
         self.calibration_bindings
-            .write_iterate_reset(&mut self.queue, iter_count);
+            .write_iterate_reset(&self.queue, iter_count);
 
         command_encoder.push_debug_group("Calibrate");
         {
@@ -583,7 +584,7 @@ impl<'w> GpuContext<'w> {
                             });
 
                     // Resize compute shader bindings
-                    self.compute_bindings = ComputeBindings::new(
+                    self.compute_bindings = ComputeBindings::build(
                         &self.device,
                         &self.compute_bind_group_layout,
                         self.params.scaled_dimensions,
@@ -598,7 +599,7 @@ impl<'w> GpuContext<'w> {
                         .fps_balancer
                         .is_calibrated(self.params.word_count)
                     {
-                        self.calibration_bindings = ComputeBindings::new(
+                        self.calibration_bindings = ComputeBindings::build(
                             &self.device,
                             &self.compute_bind_group_layout,
                             self.params.scaled_dimensions,
@@ -700,7 +701,7 @@ impl<'w> GpuContext<'w> {
                 }
 
                 // Resize compute shader bindings
-                self.compute_bindings = ComputeBindings::new(
+                self.compute_bindings = ComputeBindings::build(
                     &self.device,
                     &self.compute_bind_group_layout,
                     scaled_dimensions,
@@ -712,7 +713,7 @@ impl<'w> GpuContext<'w> {
                 );
 
                 // Update calibration bindings
-                self.calibration_bindings = ComputeBindings::new(
+                self.calibration_bindings = ComputeBindings::build(
                     &self.device,
                     &self.compute_bind_group_layout,
                     scaled_dimensions,
@@ -728,7 +729,7 @@ impl<'w> GpuContext<'w> {
                 );
 
                 // Resize render shader bindings
-                self.render_bindings = RenderBindings::new(
+                self.render_bindings = RenderBindings::build(
                     &self.device,
                     &self.render_bind_group_layout,
                     scaled_dimensions,

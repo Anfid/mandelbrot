@@ -60,7 +60,7 @@ impl RenderBindings {
         }
     }
 
-    pub fn new(
+    pub fn build(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         size: ScaledDimensions,

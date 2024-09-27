@@ -54,7 +54,7 @@ impl ComputeBindings {
         }
     }
 
-    pub fn new(
+    pub fn build(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         dimensions: ScaledDimensions,
@@ -158,9 +158,9 @@ impl<'c> ComputeParams<'c> {
         buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.reset as u32));
         buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.size.aligned_width(64)));
         buffer.extend_from_slice(&bytemuck::cast::<_, [u8; 4]>(self.size.height));
-        buffer.extend_from_slice(&self.coords.x.as_bytes());
-        buffer.extend_from_slice(&self.coords.y.as_bytes());
-        buffer.extend_from_slice(&self.coords.step.as_bytes());
+        buffer.extend_from_slice(self.coords.x.as_bytes());
+        buffer.extend_from_slice(self.coords.y.as_bytes());
+        buffer.extend_from_slice(self.coords.step.as_bytes());
         buffer
     }
 }
